@@ -1,0 +1,36 @@
+# Ignore folders
+ignore/
+**/logs/
+**/logs/**/*
+**/**/logs/**/*
+
+# Julia artifacts and compiled files
+*.jl.cov
+*.jl.*.cov
+*.jl.mem
+Manifest.toml
+
+# IDE and editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Build artifacts
+deps/
+build/
+
+# Test coverage
+coverage/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+Results and output files (optional - uncomment if you want to ignore these)
+
+**/*.txt
+

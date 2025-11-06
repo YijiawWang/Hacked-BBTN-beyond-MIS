@@ -1,0 +1,16 @@
+*.jl.*.cov
+*.jl.cov
+*.jl.mem
+/docs/Manifest.toml
+/docs/build/
+Manifest.toml
+.vscode
+.DS_Store
+./Manifest.toml
+
+lib/OptimalBranchingMIS/docs/build/
+lib/OptimalBranchingCore/docs/build/
+
+docs/src/generated/
+
+report.typ

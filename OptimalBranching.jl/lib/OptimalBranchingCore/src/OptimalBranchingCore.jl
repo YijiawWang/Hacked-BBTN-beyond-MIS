@@ -1,0 +1,37 @@
+module OptimalBranchingCore
+
+using JuMP, HiGHS
+using BitBasis
+using DataStructures
+
+# logic expressions
+export Clause, BranchingTable, DNF, booleans, ∨, ∧, ¬, covered_by, literals, is_true_literal, is_false_literal
+# weighted minimum set cover solvers and optimal branching rule
+export weighted_minimum_set_cover, weighted_minimum_set_cover_exactlyone, AbstractSetCoverSolver, LPSolver, IPSolver
+export minimize_γ, optimal_branching_rule, OptimalBranchingResult
+
+##### interfaces #####
+# high-level interface
+export AbstractProblem, branch_and_reduce, BranchingStrategy
+
+# variable selector interface
+export select_variable, AbstractSelector
+# branching table solver interface
+export branching_table, branching_table_ground_counting, branching_table_counting, branching_table_exhaustive, AbstractTableSolver, NaiveBranch, GreedyMerge, test_rule
+# measure interface
+export measure, AbstractMeasure
+# reducer interface
+export reduce_problem, AbstractReducer, NoReducer
+# return type
+export MaxSize, MaxSizeBranchCount
+
+include("algebra.jl")
+include("bitbasis.jl")
+include("interfaces.jl")
+include("branching_table.jl")
+include("setcovering.jl")
+include("branch.jl")
+include("greedymerge.jl")
+include("mockproblem.jl")
+
+end
