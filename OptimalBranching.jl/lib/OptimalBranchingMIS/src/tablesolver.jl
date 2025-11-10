@@ -93,6 +93,59 @@ function OptimalBranchingCore.BranchingTable(arr::AbstractArray{<:CountingTropic
     end
 end
 
+# Helper function to extract subset configuration from tn_vs config to vs config
+function _extract_vs_config(config, vs::Vector{Int}, tn_vs::Vector{Int})
+    # config corresponds to tn_vs configuration
+    # Extract the bits corresponding to vs (which is a subset of tn_vs)
+    vs_config = Int[]
+    for v in vs
+        idx = findfirst(==(v), tn_vs)
+        if idx !== nothing
+            # Access the bit at position idx (1-based) from config
+            # config can be StaticBitVector or similar, which supports indexing
+            bit_val = config[idx]
+            push!(vs_config, Int(bit_val))
+        end
+    end
+    return vs_config
+end
+
+function OptimalBranchingCore.BranchingTable(arr::AbstractArray{<:CountingTropical{<:Real, <:ConfigEnumerator{N}}}, separate_rows::Bool, vs::Vector{Int}, tn_vs::Vector{Int}) where N
+    if separate_rows
+        # Flatten: each config becomes its own row (one row per (ov, vs) combination)
+        # collect_configs returns StaticBitVector, which BranchingTable constructor will convert to integers
+        # Extract vs configurations from tn_vs configurations and remove duplicates
+        n = length(vs)
+        seen_configs = Set{Vector{Int}}()
+        collected_rows = Vector{Vector{Vector{Int}}}()
+        
+        for elem in arr
+            configs = collect_configs(elem)
+            for config in configs
+                if !isempty(config)
+                    # Extract vs configuration from tn_vs configuration
+                    vs_config = _extract_vs_config(config, vs, tn_vs)
+                    # Remove duplicates by checking if we've seen this configuration
+                    if !isempty(vs_config) && length(vs_config) == n && vs_config ∉ seen_configs
+                        push!(seen_configs, vs_config)
+                        # Each row contains one config: [vs_config] is Vector{Vector{Int}}
+                        push!(collected_rows, [vs_config])
+                    end
+                end
+            end
+        end
+        
+        # Handle empty case
+        if isempty(collected_rows)
+            INT = BitBasis.longinttype(n, 2)
+            return BranchingTable{INT}(n, Vector{Vector{INT}}())
+        end
+        
+        # Use collected_rows directly - it's already Vector{Vector{Vector{Int}}}
+        return BranchingTable(n, collected_rows)
+    end
+end
+
 # Now we collect these configurations into a vector.
 function collect_configs(cfg::CountingTropical{<:Real, <:ConfigEnumerator}, symbols::Union{Nothing, String}=nothing)
     cs = cfg.c.data
@@ -164,6 +217,74 @@ function OptimalBranchingCore.branching_table_counting(p::MISProblem, solver::Te
     return BranchingTable(configs, true)
 end
 
+function OptimalBranchingCore.branching_table_ground_counting_induced_sparsity(p::MISProblem, solver::TensorNetworkSolver, vs::Vector{Int}, primal_bound::T) where T
+    tn_vs = union(OptimalBranchingMIS.open_neighbors(p.g, vs), vs)
+    ovs = open_vertices(p.g, vs)
+    tn_ovs = open_vertices(p.g, tn_vs)
+    subg, vmap = induced_subgraph(p.g, vs)
+    tn_subg, tn_vmap = induced_subgraph(p.g, tn_vs)
+	tn_openvertices = Int[findfirst(==(v), tn_vs) for v in tn_ovs]
+    problem = GenericTensorNetwork(IndependentSet(tn_subg, p.weights[tn_vmap]); openvertices=tn_openvertices, optimizer = GreedyMethod())
+    alpha_tensor = solve(problem, SizeMax())
+	alpha_configs = solve(problem, ConfigsMax(; bounded=false))
+	alpha_configs[map(iszero, alpha_tensor)] .= Ref(zero(eltype(alpha_configs)))
+	# post processing
+	configs = alpha_configs
+    
+    return BranchingTable(configs, true, vs, tn_vs)
+end
+
+# Helper function to map J and h values for SpinGlass problem after induced_subgraph
+# This is a copy of the function from TensorBranching to avoid circular dependencies
+function _map_spin_glass_weights(g_old::SimpleGraph{Int}, g_new::SimpleGraph{Int}, vmap::Vector{Int}, J_old::VT, h_old::VT) where VT
+    # Map h: h_new[i] = h_old[vmap[i]]
+    h_new = h_old[vmap]
+    
+    # Map J: need to find which edges in g_new correspond to which edges in g_old
+    # Create a mapping from edge tuples to edge indices in the original graph
+    edge_dict = Dict{Tuple{Int, Int}, Int}()
+    for (idx, e) in enumerate(edges(g_old))
+        u, v = src(e), dst(e)
+        edge_dict[(u, v)] = idx
+        edge_dict[(v, u)] = idx  # Store both directions for undirected edges
+    end
+    
+    emap = Int[]
+    for e in edges(g_new)
+        src_new = src(e)
+        dst_new = dst(e)
+        src_old = vmap[src_new]
+        dst_old = vmap[dst_new]
+        edge_tuple = (src_old, dst_old)
+        if haskey(edge_dict, edge_tuple)
+            push!(emap, edge_dict[edge_tuple])
+        else
+            error("Edge ($src_new, $dst_new) in new graph does not map to a valid edge in original graph")
+        end
+    end
+    J_new = J_old[emap]
+    
+    return J_new, h_new
+end
+
+function OptimalBranchingCore.branching_table_ground_counting_induced_sparsity(p::SpinGlassProblem, solver::TensorNetworkSolver, vs::Vector{Int}, primal_bound::T) where T
+    tn_vs = union(OptimalBranchingMIS.open_neighbors(p.g, vs), vs)
+    ovs = open_vertices(p.g, vs)
+    tn_ovs = open_vertices(p.g, tn_vs)
+    subg, vmap = induced_subgraph(p.g, vs)
+    tn_subg, tn_vmap = induced_subgraph(p.g, tn_vs)
+	tn_openvertices = Int[findfirst(==(v), tn_vs) for v in tn_ovs]
+    # Map J and h to the subgraph
+    J_subg, h_subg = _map_spin_glass_weights(p.g, tn_subg, tn_vmap, p.J, p.h)
+    problem = GenericTensorNetwork(SpinGlass(tn_subg, J_subg, h_subg); openvertices=tn_openvertices, optimizer = GreedyMethod())
+    alpha_tensor = solve(problem, SizeMax())
+	alpha_configs = solve(problem, ConfigsMax(; bounded=false))
+	alpha_configs[map(iszero, alpha_tensor)] .= Ref(zero(eltype(alpha_configs)))
+	# post processing
+	configs = alpha_configs
+    println("configs: ", length(configs))
+    return BranchingTable(configs, true, vs, tn_vs)
+end
 """
     branching_table_exhaustive(p::MISProblem, solver::AbstractTableSolver, vs::Vector{Int})
 
@@ -295,3 +416,4 @@ function prune_by_env(tbl::BranchingTable{INT}, p::MISProblem, vertices) where{I
     end
     return BranchingTable(OptimalBranchingCore.nbits(tbl), new_table)
 end
+

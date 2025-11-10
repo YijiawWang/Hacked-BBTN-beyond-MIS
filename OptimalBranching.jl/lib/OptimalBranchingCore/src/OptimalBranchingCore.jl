@@ -17,7 +17,7 @@ export AbstractProblem, branch_and_reduce, BranchingStrategy
 # variable selector interface
 export select_variable, AbstractSelector
 # branching table solver interface
-export branching_table, branching_table_ground_counting, branching_table_counting, branching_table_exhaustive, AbstractTableSolver, NaiveBranch, GreedyMerge, test_rule
+export branching_table, branching_table_ground_counting, branching_table_counting, branching_table_exhaustive, branching_table_ground_counting_induced_sparsity, AbstractTableSolver, NaiveBranch, GreedyMerge, test_rule
 # measure interface
 export measure, AbstractMeasure
 # reducer interface

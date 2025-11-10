@@ -27,11 +27,12 @@ function dynamic_ob_mis(g::SimpleGraph, weights::VT; reducer::AbstractReducer = 
     return maximum(res)
 end
 
-function solve_slice(branch::SlicedBranch, element_type::Type, usecuda::Bool)
+function solve_slice(branch::SlicedBranch{INT, VT, RT, MISProblem{INT, VT}}, element_type::Type, usecuda::Bool) where {INT, VT, RT}
     net = GenericTensorNetwork(IndependentSet(branch.p.g, branch.p.weights), uncompress(branch.code), Dict{Int, Int}())
     res =  Array(solve(net, SizeMax(), T = element_type, usecuda = usecuda))[].n
     return res
 end
+
 
 function contract_slices(branches::Vector{SlicedBranch}, element_type::Type, usecuda::Bool)
     res = element_type[]

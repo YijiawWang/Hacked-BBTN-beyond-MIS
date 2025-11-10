@@ -1,5 +1,5 @@
 using OptimalBranching.OptimalBranchingCore: candidate_clauses, covered_items
-using OptimalBranching.OptimalBranchingMIS: removed_vertices, select_region, clause_size
+using OptimalBranching.OptimalBranchingMIS: removed_vertices, removed_vertices_no_neighbors, readbit,select_region, clause_size
 
 function ob_region(g::SimpleGraph{Int}, code::DynamicNestedEinsum{Int}, slicer::ContractionTreeSlicer, selector::ScoreRS, size_dict::Dict{Int, Int}, verbose::Int)
 
@@ -71,6 +71,36 @@ function generate_subsets(g::SimpleGraph{Int}, weights::VT, tbl::BranchingTable,
     return subsets, rvs, residuals
 end
 
+function generate_subsets_spin_glass(g::SimpleGraph{Int}, J::VT, h::VT, tbl::BranchingTable, region::Vector{Int}) where VT
+
+    candidates = candidate_clauses(tbl)
+
+    dict_rvs = Dict{Vector{Int}, Vector{Int}}()
+    for (i, clause) in enumerate(candidates)
+        rv = sort!(removed_vertices_no_neighbors(region, g, clause))
+        if haskey(dict_rvs, rv)
+            push!(dict_rvs[rv], i)
+        else
+            dict_rvs[rv] = [i]
+        end
+    end
+
+    rvs0 = collect(keys(dict_rvs))
+    rvs = Vector{Vector{Int}}()
+    subsets = Vector{Vector{Int}}()
+    candidates_aligned = Vector{typeof(candidates[1])}()  # Aligned with rvs
+    for (i, rv) in enumerate(rvs0)
+        clauses_ids = dict_rvs[rv]
+        for j in clauses_ids
+            push!(subsets, covered_items(tbl.table, candidates[j]))
+            push!(rvs, rv)
+            push!(candidates_aligned, candidates[j])  # Keep candidates aligned with rvs
+        end
+    end
+
+    return candidates_aligned, subsets, rvs
+end
+
 function optimal_branches_ground_counting(p::MISProblem{INT, VT}, code::DynamicNestedEinsum{Int}, r::RT, slicer::ContractionTreeSlicer, region::Vector{Int}, size_dict::Dict{Int, Int}, verbose::Int) where {INT, VT, RT}
 
     cc = contraction_complexity(code, size_dict)
@@ -106,6 +136,110 @@ function optimal_branches_ground_counting(p::MISProblem{INT, VT}, code::DynamicN
 
         push!(brs, add_r(new_branch, r))
     end
+    return brs
+end
+
+function optimal_branches_ground_counting_induced_sparsity(p::MISProblem{INT, VT}, code::DynamicNestedEinsum{Int}, r::RT, primal_bound::T, slicer::ContractionTreeSlicer, region::Vector{Int}, size_dict::Dict{Int, Int}, verbose::Int) where {INT, VT, RT, T}
+
+    cc = contraction_complexity(code, size_dict)
+    (verbose ≥ 2) && (@info "solving g: $(nv(p.g)), $(ne(p.g)), code complexity: tc = $(cc.tc), sc = $(cc.sc)")
+
+    tbl0 = branching_table_ground_counting_induced_sparsity(p, slicer.table_solver, region, primal_bound)
+    (verbose ≥ 2) && (@info "table: $(length(tbl0.table))")
+
+    # special case: find reduction
+    reduction = OptimalBranchingCore.intersect_clauses(tbl0, :dfs)
+    if !isempty(reduction)
+        c = reduction[1]
+        new_branch = generate_branch_no_reduction(p, code, sort!(removed_vertices(region, p.g, c)), clause_size(p.weights, c.val & c.mask, region), slicer, size_dict)
+        return [add_r(new_branch, r)]
+    end
+
+    # Filter tbl0.table rows based on LP bound
+    # Each row contains only one bitstring
+    filtered_table = Vector{Vector{eltype(tbl0.table[1])}}()
+    n = tbl0.bit_length
+    INT_TYPE = eltype(tbl0.table[1][1])
+    
+    # Create a mask with all n bits set to 1
+    all_mask = (INT_TYPE(1) << n) - INT_TYPE(1)
+    
+    for i in 1:length(tbl0.table)
+        # Each row has only one bitstring
+        bs = tbl0.table[i][1]
+        clause = OptimalBranchingCore.Clause(all_mask, bs)
+        rv = sort!(removed_vertices(region, p.g, clause))
+        # Compute LP bound with removed vertices
+        g_i, vmap_i = induced_subgraph(p.g, setdiff(1:nv(p.g), rv))
+        r_i = clause_size(p.weights, bs & all_mask, region)
+        LP_bound = LP_MWIS(g_i, p.weights[vmap_i]) + r + r_i
+        if LP_bound > primal_bound - 0.0001
+            push!(filtered_table, tbl0.table[i])
+        end
+    end
+    if isempty(filtered_table)
+        push!(filtered_table, tbl0.table[1])
+    end
+    println("tbl0_rows:",length(tbl0.table), " filtered_rows:",length(filtered_table))
+    # Create BranchingTable from filtered table rows
+    tbl = OptimalBranchingCore.BranchingTable(tbl0.bit_length, filtered_table)
+    subsets, rvs, residuals = generate_subsets(p.g, p.weights, tbl, region)
+    (verbose ≥ 2) && (@info "candidates: $(length(rvs))")
+
+    losses = slicer_loss(p.g, code, rvs, slicer.brancher, slicer.sc_target, size_dict)
+
+    ## calculate the loss and select the best ones
+    optimal_branches_ids = set_cover_exactlyone(slicer.brancher, losses, subsets, length(tbl.table))
+
+    (verbose ≥ 2) && (@info "length of optimal branches: $(length(optimal_branches_ids))")
+
+    brs = Vector{SlicedBranch}() # brs for branches
+    for i in optimal_branches_ids
+        new_branch = generate_branch_no_reduction(p, code, rvs[i], residuals[i], slicer, size_dict)
+        (verbose ≥ 2) && (@info "branching id = $i, g: $(nv(new_branch.p.g)), $(ne(new_branch.p.g)), rv = $(rvs[i])")
+        (verbose ≥ 2) && (cc_ik = complexity(new_branch); @info "rethermalized code complexity: tc = $(cc_ik.tc), sc = $(cc_ik.sc)")
+
+        push!(brs, add_r(new_branch, r))
+    end
+    return brs
+end
+
+function optimal_branches_ground_counting_induced_sparsity(p::SpinGlassProblem{INT, VT}, code::DynamicNestedEinsum{Int}, r::RT, primal_bound::T, slicer::ContractionTreeSlicer, region::Vector{Int}, size_dict::Dict{Int, Int}, verbose::Int) where {INT, VT, RT, T}
+
+    cc = contraction_complexity(code, size_dict)
+    (verbose ≥ 2) && (@info "solving g: $(nv(p.g)), $(ne(p.g)), code complexity: tc = $(cc.tc), sc = $(cc.sc)")
+
+    tbl0 = branching_table_ground_counting_induced_sparsity(p, slicer.table_solver, region, primal_bound)
+    (verbose ≥ 2) && (@info "table: $(length(tbl0.table))")
+
+    # special case: find reduction
+    reduction = OptimalBranchingCore.intersect_clauses(tbl0, :dfs)
+    if !isempty(reduction)
+        c = reduction[1]
+        new_branch = generate_branch_no_reduction_spin_glass(p, code, sort!(removed_vertices_no_neighbors(region, p.g, c)), c.val, slicer, size_dict, region)
+        return [add_r(new_branch, r)]
+    end
+    
+    tbl = tbl0
+    candidates, subsets, rvs = generate_subsets_spin_glass(p.g, p.J, p.h, tbl, region)
+    (verbose ≥ 2) && (@info "candidates: $(length(rvs))")
+
+    losses = slicer_loss(p.g, code, rvs, slicer.brancher, slicer.sc_target, size_dict)
+
+    ## calculate the loss and select the best ones
+    optimal_branches_ids = set_cover_exactlyone(slicer.brancher, losses, subsets, length(tbl.table))
+
+    (verbose ≥ 2) && (@info "length of optimal branches: $(length(optimal_branches_ids))")
+
+    brs = Vector{SlicedBranch}() # brs for branches
+    for i in optimal_branches_ids
+        new_branch = generate_branch_no_reduction_spin_glass(p, code, rvs[i], candidates[i].val, slicer, size_dict, region)
+        (verbose ≥ 2) && (@info "branching id = $i, g: $(nv(new_branch.p.g)), $(ne(new_branch.p.g)), rv = $(rvs[i])")
+        (verbose ≥ 2) && (cc_ik = complexity(new_branch); @info "rethermalized code complexity: tc = $(cc_ik.tc), sc = $(cc_ik.sc)")
+        println("new_branch.r: ", candidates[i].val, " ", new_branch.r)
+        push!(brs, add_r(new_branch, r))
+    end
+    
     return brs
 end
 
@@ -326,3 +460,56 @@ function generate_branch_no_reduction(p::MISProblem{INT, VT}, code::DynamicNeste
 
     return SlicedBranch(MISProblem(g_i, weights_i), re_code_i, r0)
 end
+
+function generate_branch_no_reduction_spin_glass(p::SpinGlassProblem{INT, VT}, code::DynamicNestedEinsum{Int}, removed_vertices::Vector{Int}, val, slicer::ContractionTreeSlicer, size_dict::Dict{Int, Int}, region::Vector{Int}) where {INT, VT, RT}
+    g = p.g
+    r = 0.0
+    g_i, vmap_i = induced_subgraph(g, setdiff(1:nv(g), removed_vertices))
+    
+    # Create edge index mapping for efficient lookup
+    # In undirected graphs, edges may be stored as (u, v) or (v, u), so we store both
+    edge_idx_map = Dict{Tuple{Int, Int}, Int}()
+    for (idx, e) in enumerate(edges(g))
+        u, w = src(e), dst(e)
+        edge_idx_map[(u, w)] = idx
+        edge_idx_map[(w, u)] = idx  # Store both directions for undirected edges
+    end
+    
+    # Initialize h with original values, will be updated based on removed vertices
+    h = copy(p.h)
+    J = copy(p.J)
+    # val is a bitstring relative to region, so we need to find the position of v in region
+    for v in removed_vertices
+        k = findfirst(==(v), region)
+        if k === nothing
+            error("Vertex $v not found in region")
+        end
+        if readbit(val, k) == 1  #si=-1
+            r += -h[v]
+            for n in neighbors(g, v)
+                edge_idx = edge_idx_map[(v, n)]
+                h[n] += -J[edge_idx]
+                J[edge_idx] = 0.0
+            end
+        else  #si=1
+            r += h[v]
+            for n in neighbors(g, v)
+                edge_idx = edge_idx_map[(v, n)]
+                h[n] += J[edge_idx]
+                J[edge_idx] = 0.0
+            end
+        end
+    end
+
+    # Map J and h to the induced subgraph
+    J_i, h_i = map_spin_glass_weights(g, g_i, vmap_i, J, h)
+    nv(g_i) == 0 && return SlicedBranch(SpinGlassProblem(g_i, J_i, h_i), nothing,r)
+
+    sc0 = contraction_complexity(code, size_dict).sc
+
+    code_i = update_code(g_i, code, vmap_i)        
+    re_code_i = refine(code_i, size_dict, slicer.refiner, slicer.sc_target, sc0)
+
+    return SlicedBranch(SpinGlassProblem(g_i, J_i, h_i), re_code_i, r)
+end
+

@@ -160,6 +160,81 @@ function inverse_vmap_dict(vmap::Vector{Int})
     return ivmap
 end
 
+# compute edge mapping from induced subgraph to original graph
+# returns a dictionary mapping edges in g_new (as tuples) to edges in g_old (as tuples)
+function compute_emap(g_old::SimpleGraph{Int}, g_new::SimpleGraph{Int}, vmap::Vector{Int})
+    emap = Dict{Tuple{Int, Int}, Tuple{Int, Int}}()
+    ivmap = inverse_vmap_dict(vmap)
+    
+    for e in edges(g_new)
+        src_new = src(e)
+        dst_new = dst(e)
+        src_old = vmap[src_new]
+        dst_old = vmap[dst_new]
+        emap[(src_new, dst_new)] = (src_old, dst_old)
+    end
+    
+    return emap
+end
+
+# compute edge index mapping for J values in SpinGlass/Ising models
+# In GenericTensorNetworks, J is a vector where J[i] corresponds to the i-th edge in edges(g)
+# This function returns a vector mapping edge indices in g_new to edge indices in g_old
+function compute_emap_for_J(g_old::SimpleGraph{Int}, g_new::SimpleGraph{Int}, vmap::Vector{Int})
+    # Create a mapping from edge tuples to edge indices in the original graph
+    edge_dict = Dict{Tuple{Int, Int}, Int}()
+    for (idx, e) in enumerate(edges(g_old))
+        u, v = src(e), dst(e)
+        # Store both (u,v) and (v,u) to handle undirected edges
+        edge_dict[(u, v)] = idx
+        edge_dict[(v, u)] = idx
+    end
+    
+    emap = Int[]
+    for e in edges(g_new)
+        src_new = src(e)
+        dst_new = dst(e)
+        src_old = vmap[src_new]
+        dst_old = vmap[dst_new]
+        edge_tuple = (src_old, dst_old)
+        if haskey(edge_dict, edge_tuple)
+            push!(emap, edge_dict[edge_tuple])
+        else
+            error("Edge ($src_new, $dst_new) in new graph does not map to a valid edge in original graph")
+        end
+    end
+    
+    return emap
+end
+
+# Map J and h values for SpinGlass problem after induced_subgraph
+# J_old: edge coupling values for original graph (length = ne(g_old))
+# h_old: vertex field values for original graph (length = nv(g_old))
+# Returns: (J_new, h_new) where J_new corresponds to edges in g_new, h_new corresponds to vertices in g_new
+function map_spin_glass_weights(g_old::SimpleGraph{Int}, g_new::SimpleGraph{Int}, vmap::Vector{Int}, J_old::VT, h_old::VT) where VT
+    # Map h: h_new[i] = h_old[vmap[i]]
+    h_new = h_old[vmap]
+    
+    # Map J: need to find which edges in g_new correspond to which edges in g_old
+    emap = compute_emap_for_J(g_old, g_new, vmap)
+    J_new = J_old[emap]
+    
+    return J_new, h_new
+end
+
+# Find edge index in J vector for a given edge (u, v)
+# In undirected graphs, edges may be stored as (u, v) or (v, u), so we check both
+# Returns the index in J vector, or throws error if edge not found
+function find_edge_index(g::SimpleGraph{Int}, u::Int, v::Int)
+    # Try both (u, v) and (v, u) since edges may be stored in either order
+    for (idx, e) in enumerate(edges(g))
+        if (src(e) == u && dst(e) == v) || (src(e) == v && dst(e) == u)
+            return idx
+        end
+    end
+    error("Edge ($u, $v) not found in graph")
+end
+
 # reindex the tree with a vertex map
 function reindex_tree!(code::DynamicNestedEinsum{LT}, vmap::Vector{Int}) where LT
     _reindex_tree!(code, inverse_vmap(vmap))

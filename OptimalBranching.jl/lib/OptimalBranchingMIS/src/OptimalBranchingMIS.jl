@@ -10,7 +10,7 @@ using GenericTensorNetworks
 using SparseArrays
 using ProblemReductions: IndependentSet
 
-export MISProblem
+export MISProblem, SpinGlassProblem
 export MISReducer, BasicReducer, XiaoReducer, TensorNetworkReducer, SubsolverReducer
 export MinBoundarySelector, MinBoundaryHighDegreeSelector, KaHyParSelector
 

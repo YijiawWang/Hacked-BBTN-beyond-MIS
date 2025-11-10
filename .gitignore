@@ -34,3 +34,16 @@ Results and output files (optional - uncomment if you want to ignore these)
 
 **/*.txt
 
+# Image files (figures)
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.svg
+*.gif
+*.bmp
+*.tiff
+*.tif
+**/*_plot.png
+**/*_comparison.png
+

@@ -140,3 +140,33 @@ function OptimalBranchingCore.size_reduction(p::MISProblem{INT}, ::D3Measure, cl
     end
     return sum
 end
+
+"""
+    mutable struct SpinGlassProblem{INT <: Integer, VT<:AbstractVector} <: AbstractProblem
+
+Represents a Spin Glass problem.
+
+# Fields
+- `g::SimpleGraph`: The graph associated with the Spin Glass problem.
+- `weights::VT`: The weights/couplings of the edges in the graph.
+
+# Methods
+- `copy(p::SpinGlassProblem)`: Creates a copy of the given `SpinGlassProblem`.
+- `Base.show(io::IO, p::SpinGlassProblem)`: Displays the number of vertices in the `SpinGlassProblem`.
+"""
+mutable struct SpinGlassProblem{INT <: Integer, VT<:AbstractVector} <: AbstractProblem
+    g::SimpleGraph{Int}
+    J::VT
+    h::VT
+    function SpinGlassProblem(g::SimpleGraph{Int}, J::VT, h::VT) where VT
+        new{BitBasis.longinttype(nv(g), 2), VT}(g, J, h)
+    end
+    function SpinGlassProblem(g::SimpleGraph{Int})
+        new{BitBasis.longinttype(nv(g), 2), UnitWeight}(g, UnitWeight(nv(g)), UnitWeight(nv(g)))
+    end
+end
+Base.copy(p::SpinGlassProblem) = SpinGlassProblem(copy(p.g), copy(p.J), copy(p.h))
+Base.show(io::IO, p::SpinGlassProblem) = print(io, "SpinGlassProblem($(nv(p.g)))")
+OptimalBranchingCore.has_zero_size(p::SpinGlassProblem) = nv(p.g) == 0
+Base.:(==)(p1::SpinGlassProblem{T1}, p2::SpinGlassProblem{T2}) where {T1, T2} = 
+(T1 == T2) && (p1.g == p2.g) && (p1.J == p2.J) && (p1.h == p2.h)

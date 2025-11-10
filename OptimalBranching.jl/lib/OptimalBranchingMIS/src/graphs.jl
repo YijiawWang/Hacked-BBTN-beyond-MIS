@@ -46,6 +46,16 @@ function removed_vertices(vertices::Vector{Int}, g::SimpleGraph, clause::Clause{
     return unique!(rvs)
 end
 
+function removed_vertices_no_neighbors(vertices::Vector{Int}, g::SimpleGraph, clause::Clause{N}) where N
+    rvs = Int[]
+    for (k, v) in enumerate(vertices)
+        if readbit(clause.mask, k) == 1
+            push!(rvs, v)
+        end
+    end
+    return rvs
+end
+
 function removed_mask(::Type{INT}, vertices::Vector{Int}, g::SimpleGraph, clause::Clause) where INT
     mask = zero(INT)
     for (k, v) in enumerate(vertices)

@@ -11,27 +11,29 @@ using OMEinsum: DynamicNestedEinsum
 using OMEinsumContractionOrders: uniformsize
 using CSV, DataFrames
 using OrderedCollections
-include("../src/mis_ground_counting.jl")
+include("../src/spin_glass_ground_counting.jl")
 
 
 
 seed = 12345
 Random.seed!(seed)
-g = random_regular_graph(300, 3)
+g = random_regular_graph(200, 3)
 # g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(60, 60, 0.8))
-weights = ones(Float32, nv(g)) # Space complexity target
-# weights = rand(Float64, nv(g))
-p = MISProblem(g, weights)
+# J = ones(Float32, ne(g)) # Edge couplings
+# h = zeros(Float32, nv(g)) # Vertex fields
+J = randn(Float64, ne(g))  # Standard normal distribution (mean=0, std=1)
+h = randn(Float64, nv(g))
+p = SpinGlassProblem(g, J, h)
 
-filename = "rrg_n300_d3_ones_dfs_lp.csv"
-# filename = "rksg_n60filling80_rand_dfs_lp.csv"
+filename = "rrg_n200_d3_randn_dfs.csv"
+# filename = "rksg_n60filling80_rand_dfs.csv"
 
 println("\nGraph info:")
 println("  Vertices: ", nv(g))
 println("  Edges: ", ne(g))
 
 
-# Create a contraction code for the independent set problem using initialize_code
+# Create a contraction code for the spin glass problem using initialize_code
 seed = 1
 Random.seed!(seed)
 code = initialize_code(g, TreeSA())
@@ -39,7 +41,7 @@ cc = contraction_complexity(code, uniformsize(code, 2))
 println("Code complexity: ", cc)
 
 
-for sc_target in [30,28,26,24,22,20]
+for sc_target in [22,20,18,16,14,12]
     println("=" ^ 60)
     println("sc_target: ", sc_target)
     cc = contraction_complexity(code, uniformsize(code, 2))
@@ -52,8 +54,7 @@ for sc_target in [30,28,26,24,22,20]
     brancher = GreedyBrancher()
     )
 
-    # finished_slices = slice_bfs(p, slicer, code, 1)
-    finished_slices = slice_dfs_lp(p, slicer, code, true, 1)
+    finished_slices = slice_dfs(p, slicer, code, 1)
    
 
     edge_ixs = [[minmax(e.src,e.dst)...] for e in Graphs.edges(g)]
@@ -80,7 +81,7 @@ for sc_target in [30,28,26,24,22,20]
         println("slice num: ", length(finished_slices))
         
         # Save results to CSV file
-        results_dir = "./results/mis_ground_counting"
+        results_dir = "./results/spin_glass_ground_counting"
         mkpath(results_dir)  # Create directory if it doesn't exist
         
         results_file = joinpath(results_dir, filename)
@@ -107,3 +108,4 @@ for sc_target in [30,28,26,24,22,20]
     end
 
 end
+
