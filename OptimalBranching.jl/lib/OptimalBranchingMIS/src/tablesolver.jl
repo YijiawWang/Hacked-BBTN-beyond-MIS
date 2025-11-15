@@ -110,15 +110,28 @@ function _extract_vs_config(config, vs::Vector{Int}, tn_vs::Vector{Int})
     return vs_config
 end
 
-function OptimalBranchingCore.BranchingTable(arr::AbstractArray{<:CountingTropical{<:Real, <:ConfigEnumerator{N}}}, separate_rows::Bool, vs::Vector{Int}, tn_vs::Vector{Int}) where N
+# Helper function to extract ovs configuration from tn_vs config
+function _extract_ovs_config(config, ovs::Vector{Int}, tn_vs::Vector{Int})
+    # config corresponds to tn_vs configuration
+    # Extract the bits corresponding to ovs (which is a subset of tn_vs)
+    ovs_config = Int[]
+    for v in ovs
+        idx = findfirst(==(v), tn_vs)
+        if idx !== nothing
+            bit_val = config[idx]
+            push!(ovs_config, Int(bit_val))
+        end
+    end
+    return ovs_config
+end
+
+function OptimalBranchingCore.BranchingTable(arr::AbstractArray{<:CountingTropical{<:Real, <:ConfigEnumerator{N}}}, separate_rows::Bool, vs::Vector{Int}, tn_vs::Vector{Int}, ovs::Vector{Int}) where N
+    n = length(vs)
+    seen_configs = Set{Vector{Int}}()
+    
     if separate_rows
-        # Flatten: each config becomes its own row (one row per (ov, vs) combination)
-        # collect_configs returns StaticBitVector, which BranchingTable constructor will convert to integers
-        # Extract vs configurations from tn_vs configurations and remove duplicates
-        n = length(vs)
-        seen_configs = Set{Vector{Int}}()
+        # When separate_rows=true, each config gets its own row (original behavior)
         collected_rows = Vector{Vector{Vector{Int}}}()
-        
         for elem in arr
             configs = collect_configs(elem)
             for config in configs
@@ -134,14 +147,46 @@ function OptimalBranchingCore.BranchingTable(arr::AbstractArray{<:CountingTropic
                 end
             end
         end
-        
-        # Handle empty case
         if isempty(collected_rows)
             INT = BitBasis.longinttype(n, 2)
             return BranchingTable{INT}(n, Vector{Vector{INT}}())
         end
+        return BranchingTable(n, collected_rows)
+    else
+        # When separate_rows=false, group by ovs configuration
+        # Group by ovs configuration: Dict{ovs_config_tuple => Vector{vs_configs}}
+        # Use tuple as key since Vector is not hashable
+        grouped_by_ovs = Dict{Tuple{Vararg{Int}}, Vector{Vector{Int}}}()
         
-        # Use collected_rows directly - it's already Vector{Vector{Vector{Int}}}
+        for elem in arr
+            configs = collect_configs(elem)
+            for config in configs
+                if !isempty(config)
+                    # Extract vs and ovs configurations from tn_vs configuration
+                    vs_config = _extract_vs_config(config, vs, tn_vs)
+                    ovs_config = _extract_ovs_config(config, ovs, tn_vs)
+                    
+                    # Remove duplicates by checking if we've seen this vs_config
+                    if !isempty(vs_config) && length(vs_config) == n && vs_config ∉ seen_configs
+                        push!(seen_configs, vs_config)
+                        
+                        # Group by ovs_config: convert to tuple for dictionary key (tuples are hashable)
+                        ovs_key = tuple(ovs_config...)
+                        if !haskey(grouped_by_ovs, ovs_key)
+                            grouped_by_ovs[ovs_key] = Vector{Vector{Int}}()
+                        end
+                        push!(grouped_by_ovs[ovs_key], vs_config)
+                    end
+                end
+            end
+        end
+        
+        # Convert grouped dictionary to collected_rows format
+        collected_rows = Vector{Vector{Vector{Int}}}()
+        for (ovs_key, vs_configs) in grouped_by_ovs
+            # All vs_configs with the same ovs_config go in the same row
+            push!(collected_rows, vs_configs)
+        end
         return BranchingTable(n, collected_rows)
     end
 end
@@ -231,7 +276,7 @@ function OptimalBranchingCore.branching_table_ground_counting_induced_sparsity(p
 	# post processing
 	configs = alpha_configs
     
-    return BranchingTable(configs, true, vs, tn_vs)
+    return BranchingTable(configs, true, vs, tn_vs, ovs)
 end
 
 # Helper function to map J and h values for SpinGlass problem after induced_subgraph
@@ -280,11 +325,28 @@ function OptimalBranchingCore.branching_table_ground_counting_induced_sparsity(p
     alpha_tensor = solve(problem, SizeMax())
 	alpha_configs = solve(problem, ConfigsMax(; bounded=false))
 	alpha_configs[map(iszero, alpha_tensor)] .= Ref(zero(eltype(alpha_configs)))
-	# post processing
+	configs = alpha_configs
+    return BranchingTable(configs, true, vs, tn_vs, ovs)
+end
+
+function OptimalBranchingCore.branching_table_ground_induced_sparsity(p::SpinGlassProblem, solver::TensorNetworkSolver, vs::Vector{Int}, primal_bound::T) where T
+    tn_vs = union(OptimalBranchingMIS.open_neighbors(p.g, vs), vs)
+    ovs = open_vertices(p.g, vs)
+    tn_ovs = open_vertices(p.g, tn_vs)
+    subg, vmap = induced_subgraph(p.g, vs)
+    tn_subg, tn_vmap = induced_subgraph(p.g, tn_vs)
+	tn_openvertices = Int[findfirst(==(v), tn_vs) for v in tn_ovs]
+    # Map J and h to the subgraph
+    J_subg, h_subg = _map_spin_glass_weights(p.g, tn_subg, tn_vmap, p.J, p.h)
+    problem = GenericTensorNetwork(SpinGlass(tn_subg, J_subg, h_subg); openvertices=tn_openvertices, optimizer = GreedyMethod())
+    alpha_tensor = solve(problem, SizeMax())
+	alpha_configs = solve(problem, ConfigsMax(; bounded=false))
+	alpha_configs[map(iszero, alpha_tensor)] .= Ref(zero(eltype(alpha_configs)))
 	configs = alpha_configs
     println("configs: ", length(configs))
-    return BranchingTable(configs, true, vs, tn_vs)
+    return BranchingTable(configs, false, vs, tn_vs, ovs)
 end
+
 """
     branching_table_exhaustive(p::MISProblem, solver::AbstractTableSolver, vs::Vector{Int})
 
@@ -416,4 +478,5 @@ function prune_by_env(tbl::BranchingTable{INT}, p::MISProblem, vertices) where{I
     end
     return BranchingTable(OptimalBranchingCore.nbits(tbl), new_table)
 end
+
 

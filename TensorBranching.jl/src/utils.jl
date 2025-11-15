@@ -222,6 +222,49 @@ function map_spin_glass_weights(g_old::SimpleGraph{Int}, g_new::SimpleGraph{Int}
     return J_new, h_new
 end
 
+function induced_spin_glass_subproblem(g_old::SimpleGraph{Int}, g_new::SimpleGraph{Int}, vmap::Vector{Int}, J_old::Vector{T}, h_old::Vector{T}, val, removed_vertices::Vector{Int}, region::Vector{Int}) where T
+    # Create edge index mapping for efficient lookup
+    # In undirected graphs, edges may be stored as (u, v) or (v, u), so we store both
+    edge_idx_map = Dict{Tuple{Int, Int}, Int}()
+    for (idx, e) in enumerate(edges(g_old))
+        u, w = src(e), dst(e)
+        edge_idx_map[(u, w)] = idx
+        edge_idx_map[(w, u)] = idx  # Store both directions for undirected edges
+    end
+    # Initialize h with original values, will be updated based on removed vertices
+    h = copy(h_old)
+    J = copy(J_old)
+    r = zero(T)  # Initialize energy contribution accumulator
+    # val is a bitstring relative to region, so we need to find the position of v in region
+    for v in removed_vertices
+        k = findfirst(==(v), region)
+        if k === nothing
+            error("Vertex $v not found in region")
+        end
+        if readbit(val, k) == 1  #si=-1
+            r += -h[v]
+            for n in neighbors(g_old, v)
+                edge_idx = edge_idx_map[(v, n)]
+                h[n] += -J[edge_idx]
+                J[edge_idx] = 0.0
+            end
+        else  #si=1
+            r += h[v]
+            for n in neighbors(g_old, v)
+                edge_idx = edge_idx_map[(v, n)]
+                h[n] += J[edge_idx]
+                J[edge_idx] = 0.0
+            end
+        end
+       
+    end
+
+    # Map J and h to the induced subgraph
+    J_new, h_new = map_spin_glass_weights(g_old, g_new, vmap, J, h)
+    return J_new, h_new, r
+end
+
+
 # Find edge index in J vector for a given edge (u, v)
 # In undirected graphs, edges may be stored as (u, v) or (v, u), so we check both
 # Returns the index in J vector, or throws error if edge not found
@@ -387,7 +430,7 @@ end
 function quick_feasible_solution(graph::SimpleGraph,weights::Vector{T},time_limit::Float64; optimizer = SCIP.Optimizer) where T
     model = Model(optimizer)  
     set_silent(model)  
-    set_optimizer_attribute(model, "limits/time", time_limit)
+    set_time_limit_sec(model, time_limit)
     set_optimizer_attribute(model, "limits/gap", 0.1)
     nsc = nv(graph)
     @variable(model, 0 <= x[i = 1:nsc] <= 1, Int)
@@ -404,3 +447,189 @@ function quick_feasible_solution(graph::SimpleGraph,weights::Vector{T},time_limi
     optimize!(model)
     return objective_value(model)
 end
+
+
+function spinglass_linear_IP(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.Optimizer) where T
+    model = Model(optimizer)  
+    set_silent(model)
+    nsc = nv(g)+ne(g)
+    @variable(model, 0 <= x[i = 1:nsc] <= 1, Int)
+    Q = [4*j for j in J]
+    c = [-2*h[i] for i in 1:nv(g)]
+    for (idx, e) in enumerate(edges(g))
+        i = src(e)
+        j = dst(e)
+        c[i] += -2*J[idx]
+        c[j] += -2*J[idx]
+        @constraint(model, x[nv(g)+idx] >= x[i] + x[j] - 1)
+        @constraint(model, x[nv(g)+idx] <= x[i])
+        @constraint(model, x[nv(g)+idx] <= x[j])
+    end
+    @objective(model, Max, sum(Q[i-nv(g)]*x[i] for i in (nv(g)+1):nsc) + sum(c[i]*x[i] for i in 1:nv(g)))
+    optimize!(model)
+    return objective_value(model) + sum(J[i] for i in 1:ne(g)) + sum(h[i] for i in 1:nv(g))
+end
+
+function spinglass_linear_LP_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.Optimizer) where T
+    model = Model(optimizer)  
+    set_silent(model)
+    nsc = nv(g)+ne(g)
+    @variable(model, 0 <= x[i = 1:nsc] <= 1)
+    Q = [4*j for j in J]
+    c = [-2*h[i] for i in 1:nv(g)]
+    for (idx, e) in enumerate(edges(g))
+        i = src(e)
+        j = dst(e)
+        c[i] += -2*J[idx]
+        c[j] += -2*J[idx]
+        @constraint(model, x[nv(g)+idx] >= x[i] + x[j] - 1)
+        @constraint(model, x[nv(g)+idx] <= x[i])
+        @constraint(model, x[nv(g)+idx] <= x[j])
+    end
+    @objective(model, Max, sum(Q[i-nv(g)]*x[i] for i in (nv(g)+1):nsc) + sum(c[i]*x[i] for i in 1:nv(g)))
+    optimize!(model)
+    return objective_value(model) + sum(J[i] for i in 1:ne(g)) + sum(h[i] for i in 1:nv(g))
+end
+
+function QP_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.Optimizer, time_limit::Float64 = 10.0) where T
+    n = nv(g)
+    # Step 1: Convert J, h to Q matrix and c vector
+    c = [-2*h[i] for i in 1:nv(g)]
+    for (idx, e) in enumerate(edges(g))
+        i = src(e)
+        j = dst(e)
+        c[i] += -2*J[idx]
+        c[j] += -2*J[idx]
+    end
+    
+    
+    # lambda_min_estimate = Inf
+    # for i in 1:n
+    #     radius = sum(abs(Q[i, j]) for j in 1:n if j != i)
+    #     center = Q[i, i]
+    #     lambda_min_estimate = min(lambda_min_estimate, center - radius)
+    # end
+    
+    # lambda_shift = max(zero(T), -lambda_min_estimate)
+    # if lambda_shift > 0
+    #     for i in 1:n
+    #         Q[i, i] += lambda_shift
+    #     end
+    # end
+    
+    model = Model(optimizer)
+    set_silent(model)
+    # Set time limit using JuMP's built-in function
+    set_time_limit_sec(model, time_limit)
+    
+    # Variables: continuous in [0, 1]
+    @variable(model, 0 <= x[i = 1:n] <= 1)
+    
+    # Build quadratic objective efficiently: only include non-zero terms
+    # Q is sparse (only edges have non-zero values), so we iterate over edges instead of all pairs
+    # This avoids creating O(n²) terms for large graphs
+    quadratic_terms = [4*J[idx] * x[src(e)] * x[dst(e)] for (idx, e) in enumerate(edges(g))]
+    quadratic_obj = isempty(quadratic_terms) ? 0.0 : sum(quadratic_terms)
+    
+    linear_obj = sum(c[i] * x[i] for i in 1:n)
+    @objective(model, Max, quadratic_obj + linear_obj)
+    optimize!(model)
+    # Check optimization status
+    status = termination_status(model)
+    
+    # Handle empty collections in sum
+    J_sum = isempty(J) ? zero(T) : sum(J)
+    h_sum = isempty(h) ? zero(T) : sum(h)
+    
+    # If optimization completed successfully, return objective value
+    if status == JuMP.MOI.OPTIMAL || status == JuMP.MOI.LOCALLY_SOLVED
+       try
+            obj_bound = objective_bound(model)
+            return obj_bound + J_sum + h_sum
+        catch e
+            error("Failed to get objective value or bound from SCIP: $e")
+        end
+    else
+        # If time limit reached or other issues, return upper bound
+        # For maximization, objective_bound gives the upper bound
+        try
+            obj_bound = objective_bound(model)
+            return obj_bound + J_sum + h_sum
+        catch e
+            error("QP optimization failed with status: $status, and failed to get bound: $e")
+        end
+    end
+end 
+
+
+function QIP_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.Optimizer, time_limit::Float64 = 10.0) where T
+    n = nv(g)
+    # Step 1: Convert J, h to Q matrix and c vector
+    c = [-2*h[i] for i in 1:nv(g)]
+    for (idx, e) in enumerate(edges(g))
+        i = src(e)
+        j = dst(e)
+        c[i] += -2*J[idx]
+        c[j] += -2*J[idx]
+    end
+    
+    
+    # lambda_min_estimate = Inf
+    # for i in 1:n
+    #     radius = sum(abs(Q[i, j]) for j in 1:n if j != i)
+    #     center = Q[i, i]
+    #     lambda_min_estimate = min(lambda_min_estimate, center - radius)
+    # end
+    
+    # lambda_shift = max(zero(T), -lambda_min_estimate)
+    # if lambda_shift > 0
+    #     for i in 1:n
+    #         Q[i, i] += lambda_shift
+    #     end
+    # end
+    
+    model = Model(optimizer)
+    set_silent(model)
+    # Set time limit using JuMP's built-in function
+    set_time_limit_sec(model, time_limit)
+    
+    # Variables: continuous in [0, 1]
+    @variable(model, 0 <= x[i = 1:n] <= 1, Int)
+    
+    # Build quadratic objective efficiently: only include non-zero terms
+    # Q is sparse (only edges have non-zero values), so we iterate over edges instead of all pairs
+    # This avoids creating O(n²) terms for large graphs
+    quadratic_terms = [4*J[idx] * x[src(e)] * x[dst(e)] for (idx, e) in enumerate(edges(g))]
+    quadratic_obj = isempty(quadratic_terms) ? 0.0 : sum(quadratic_terms)
+    
+    linear_obj = sum(c[i] * x[i] for i in 1:n)
+    @objective(model, Max, quadratic_obj + linear_obj)
+    
+    optimize!(model)
+    
+    # Check optimization status
+    status = termination_status(model)
+    
+    # Handle empty collections in sum
+    J_sum = isempty(J) ? zero(T) : sum(J)
+    h_sum = isempty(h) ? zero(T) : sum(h)
+    
+    # If optimization completed successfully, return objective value
+    if status == JuMP.MOI.OPTIMAL || status == JuMP.MOI.LOCALLY_SOLVED
+        try
+            obj_bound = objective_bound(model)
+            return obj_bound + J_sum + h_sum
+        catch e
+            error("Failed to get objective value or bound from SCIP: $e")
+        end
+    else
+        # If time limit reached or other issues, return upper bound
+        # For maximization, objective_bound gives the upper bound
+        try
+            obj_bound = objective_bound(model)
+            return obj_bound + J_sum + h_sum
+        catch e
+            error("QP optimization failed with status: $status, and failed to get bound: $e")
+        end
+    end
+end 

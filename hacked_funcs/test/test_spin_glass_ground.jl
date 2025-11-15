@@ -4,12 +4,12 @@ using GenericTensorNetworks, ProblemReductions
 using Graphs, TropicalNumbers, OMEinsum, OMEinsumContractionOrders,Random
 using Base.Threads
 using TensorBranching: ob_region, optimal_branches, ContractionTreeSlicer, uncompress, SlicedBranch, complexity
-using TensorBranching: optimal_branches_ground_counting, optimal_branches_ground_counting_induced_sparsity, initialize_code, GreedyBrancher, ScoreRS
+using TensorBranching: optimal_branches_ground_induced_sparsity, initialize_code, GreedyBrancher, ScoreRS
 using OptimalBranchingMIS: TensorNetworkSolver
 using OMEinsumContractionOrders: TreeSA
 using OMEinsum: DynamicNestedEinsum
 using OMEinsumContractionOrders: uniformsize
-include("../src/spin_glass_ground_counting.jl")
+include("../src/spin_glass_ground.jl")
 
 
 
@@ -21,12 +21,8 @@ function test_slice_dfs(g, J, h,sc_target)
     # Create test problem
     p = SpinGlassProblem(g, J, h)
     g_problem = GenericTensorNetwork(SpinGlass(g, J, h); optimizer=TreeSA())
-    # count_all_independent_sets = solve(g_problem, CountingAll())[]
-    count_maximum_spin_glass = solve(g_problem, CountingMax())[]
-    spin_glass_size = count_maximum_spin_glass.n[1]
-    spin_glass_count = count_maximum_spin_glass.c[1]
-    println("Maximum spin glass size: ", spin_glass_size)
-    println("Count maximum spin glass: ", spin_glass_count)
+    maximum_spin_glass_result = solve(g_problem, SizeMax())[].n
+    println("Maximum spin glass size: ", maximum_spin_glass_result)
 
     println("\nGraph info:")
     println("  Vertices: ", nv(g))
@@ -61,20 +57,16 @@ function test_slice_dfs(g, J, h,sc_target)
         println("  Number of finished slices: ", length(finished_slices))
         
         if !isempty(finished_slices)
-            spin_glass_count_sum = 0.0
+            maximum_spin_glass_result_sum = 0.0
             for (i, slice) in enumerate(finished_slices[1:length(finished_slices)])
                 sub_g_problem = GenericTensorNetwork(SpinGlass(slice.p.g, slice.p.J, slice.p.h); optimizer=TreeSA())
-                sub_count_maximum_spin_glass = solve(sub_g_problem, CountingMax())[]
-                sub_spin_glass_size = sub_count_maximum_spin_glass.n[1] + slice.r
-                sub_spin_glass_count = sub_count_maximum_spin_glass.c[1]
-                if abs(sub_spin_glass_size - spin_glass_size) < 1e-12
-                    spin_glass_count_sum += sub_spin_glass_count
+                sub_maximum_spin_glass_result = solve(sub_g_problem, SizeMax())[].n + slice.r
+                if sub_maximum_spin_glass_result > maximum_spin_glass_result_sum
+                    maximum_spin_glass_result_sum = sub_maximum_spin_glass_result
                 end
-                
             end
-            println("Count maximum spin glass: ", spin_glass_count_sum,", spin_glass_size: $spin_glass_size, spin_glass_count: $spin_glass_count")
-            @assert spin_glass_count_sum == spin_glass_count "Spin glass count mismatch: expected $spin_glass_count, got $spin_glass_count_sum"
-            
+            println("Maximum spin glass result: ", maximum_spin_glass_result_sum,", maximum_spin_glass_result: $maximum_spin_glass_result")
+            @assert (maximum_spin_glass_result_sum - maximum_spin_glass_result) < 1e-12 "Maximum spin glass result mismatch: expected $maximum_spin_glass_result, got $maximum_spin_glass_result_sum"
         end
         
         return finished_slices
@@ -87,20 +79,22 @@ function test_slice_dfs(g, J, h,sc_target)
 end
 # Run the test
 if abspath(PROGRAM_FILE) == @__FILE__
-    seed = 123456
+    seed = 12345
     Random.seed!(seed)
-    g = random_regular_graph(100, 3)
-    J = ones(Float32, ne(g))
-    h = zeros(Float32, nv(g))
+    # g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(20, 20, 0.8))
+    g = random_regular_graph(120, 3)
+    # g = Graphs.grid([25, 25])
+    J = 2.0 * rand(Bool, ne(g)) .- 1.0  # Random ±1
+    h = ones(Float64, nv(g))
     test_slice_dfs(g, J, h, 10)
     
 
 
-    g = random_regular_graph(300, 3)
-    J = rand(Float64, ne(g))
-    # J = 2.0 * rand(Bool, ne(g)) .- 1.0  # Random ±1
-    h = rand(Float64, nv(g))
-    test_slice_dfs(g, J, h, 10)
+    #g = random_regular_graph(200, 3)
+    g = Graphs.grid([15, 15])
+    J = randn(Float64, ne(g))
+    h = randn(Float64, nv(g))
+    test_slice_dfs(g, J, h, 8)
    
 end
 

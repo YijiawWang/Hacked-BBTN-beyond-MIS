@@ -71,7 +71,7 @@ function generate_subsets(g::SimpleGraph{Int}, weights::VT, tbl::BranchingTable,
     return subsets, rvs, residuals
 end
 
-function generate_subsets_spin_glass(g::SimpleGraph{Int}, J::VT, h::VT, tbl::BranchingTable, region::Vector{Int}) where VT
+function generate_subsets_no_neighbors(g::SimpleGraph{Int}, tbl::BranchingTable, region::Vector{Int})
 
     candidates = candidate_clauses(tbl)
 
@@ -147,42 +147,47 @@ function optimal_branches_ground_counting_induced_sparsity(p::MISProblem{INT, VT
     tbl0 = branching_table_ground_counting_induced_sparsity(p, slicer.table_solver, region, primal_bound)
     (verbose ≥ 2) && (@info "table: $(length(tbl0.table))")
 
+    
+    # Filter tbl0.table rows based on LP bound
+    # Each row contains only one bitstring
+    if primal_bound > 0
+        filtered_table = Vector{Vector{eltype(tbl0.table[1])}}()
+        n = tbl0.bit_length
+        INT_TYPE = eltype(tbl0.table[1][1])
+        
+        # Create a mask with all n bits set to 1
+        all_mask = (INT_TYPE(1) << n) - INT_TYPE(1)
+        
+        for i in 1:length(tbl0.table)
+            # Each row has only one bitstring
+            bs = tbl0.table[i][1]
+            clause = OptimalBranchingCore.Clause(all_mask, bs)
+            rv = sort!(removed_vertices(region, p.g, clause))
+            # Compute LP bound with removed vertices
+            g_i, vmap_i = induced_subgraph(p.g, setdiff(1:nv(p.g), rv))
+            r_i = clause_size(p.weights, bs & all_mask, region)
+            LP_bound = LP_MWIS(g_i, p.weights[vmap_i]) + r + r_i
+            if LP_bound > primal_bound - 0.0001
+                push!(filtered_table, tbl0.table[i])
+            end
+        end
+        if isempty(filtered_table)
+            push!(filtered_table, tbl0.table[1])
+        end
+        println("tbl0_rows:",length(tbl0.table), " filtered_rows:",length(filtered_table))
+        # Create BranchingTable from filtered table rows
+        tbl = OptimalBranchingCore.BranchingTable(tbl0.bit_length, filtered_table)
+    else
+        tbl = tbl0
+    end
     # special case: find reduction
-    reduction = OptimalBranchingCore.intersect_clauses(tbl0, :dfs)
+    reduction = OptimalBranchingCore.intersect_clauses(tbl, :dfs)
     if !isempty(reduction)
         c = reduction[1]
         new_branch = generate_branch_no_reduction(p, code, sort!(removed_vertices(region, p.g, c)), clause_size(p.weights, c.val & c.mask, region), slicer, size_dict)
         return [add_r(new_branch, r)]
     end
 
-    # Filter tbl0.table rows based on LP bound
-    # Each row contains only one bitstring
-    filtered_table = Vector{Vector{eltype(tbl0.table[1])}}()
-    n = tbl0.bit_length
-    INT_TYPE = eltype(tbl0.table[1][1])
-    
-    # Create a mask with all n bits set to 1
-    all_mask = (INT_TYPE(1) << n) - INT_TYPE(1)
-    
-    for i in 1:length(tbl0.table)
-        # Each row has only one bitstring
-        bs = tbl0.table[i][1]
-        clause = OptimalBranchingCore.Clause(all_mask, bs)
-        rv = sort!(removed_vertices(region, p.g, clause))
-        # Compute LP bound with removed vertices
-        g_i, vmap_i = induced_subgraph(p.g, setdiff(1:nv(p.g), rv))
-        r_i = clause_size(p.weights, bs & all_mask, region)
-        LP_bound = LP_MWIS(g_i, p.weights[vmap_i]) + r + r_i
-        if LP_bound > primal_bound - 0.0001
-            push!(filtered_table, tbl0.table[i])
-        end
-    end
-    if isempty(filtered_table)
-        push!(filtered_table, tbl0.table[1])
-    end
-    println("tbl0_rows:",length(tbl0.table), " filtered_rows:",length(filtered_table))
-    # Create BranchingTable from filtered table rows
-    tbl = OptimalBranchingCore.BranchingTable(tbl0.bit_length, filtered_table)
     subsets, rvs, residuals = generate_subsets(p.g, p.weights, tbl, region)
     (verbose ≥ 2) && (@info "candidates: $(length(rvs))")
 
@@ -212,16 +217,49 @@ function optimal_branches_ground_counting_induced_sparsity(p::SpinGlassProblem{I
     tbl0 = branching_table_ground_counting_induced_sparsity(p, slicer.table_solver, region, primal_bound)
     (verbose ≥ 2) && (@info "table: $(length(tbl0.table))")
 
+    # Filter tbl0.table rows based on LP bound
+    # Each row contains only one bitstring
+    if primal_bound > 0
+        filtered_table = Vector{Vector{eltype(tbl0.table[1])}}()
+        n = tbl0.bit_length
+        INT_TYPE = eltype(tbl0.table[1][1])
+        
+        # Create a mask with all n bits set to 1
+        all_mask = (INT_TYPE(1) << n) - INT_TYPE(1)
+        
+        for i in 1:length(tbl0.table)
+            # Each row has only one bitstring
+            bs = tbl0.table[i][1]
+            clause = OptimalBranchingCore.Clause(all_mask, bs)
+            rv = sort!(removed_vertices_no_neighbors(region, p.g, clause))
+            # Compute LP bound with removed vertices
+            g_i, vmap_i = induced_subgraph(p.g, setdiff(1:nv(p.g), rv))
+            J_i, h_i, r_i = induced_spin_glass_subproblem(p.g, g_i, vmap_i, p.J, p.h, bs & all_mask, rv, region)
+            # LP_bound = spinglass_linear_LP_bound(g_i, J_i, h_i) + r + r_i
+            LP_bound = spinglass_linear_LP_bound(g_i, J_i, h_i) + r + r_i
+            if LP_bound > primal_bound - 0.0001
+                push!(filtered_table, tbl0.table[i])
+            end
+        end
+        if isempty(filtered_table)
+            push!(filtered_table, tbl0.table[1])
+        end
+        println("tbl0_rows:",length(tbl0.table), " filtered_rows:",length(filtered_table))
+        # Create BranchingTable from filtered table rows
+        tbl = OptimalBranchingCore.BranchingTable(tbl0.bit_length, filtered_table)
+    else
+        tbl = tbl0
+    end
+
     # special case: find reduction
-    reduction = OptimalBranchingCore.intersect_clauses(tbl0, :dfs)
+    reduction = OptimalBranchingCore.intersect_clauses(tbl, :dfs)
     if !isempty(reduction)
         c = reduction[1]
         new_branch = generate_branch_no_reduction_spin_glass(p, code, sort!(removed_vertices_no_neighbors(region, p.g, c)), c.val, slicer, size_dict, region)
         return [add_r(new_branch, r)]
     end
     
-    tbl = tbl0
-    candidates, subsets, rvs = generate_subsets_spin_glass(p.g, p.J, p.h, tbl, region)
+    candidates, subsets, rvs = generate_subsets_no_neighbors(p.g, tbl, region)
     (verbose ≥ 2) && (@info "candidates: $(length(rvs))")
 
     losses = slicer_loss(p.g, code, rvs, slicer.brancher, slicer.sc_target, size_dict)
@@ -236,7 +274,81 @@ function optimal_branches_ground_counting_induced_sparsity(p::SpinGlassProblem{I
         new_branch = generate_branch_no_reduction_spin_glass(p, code, rvs[i], candidates[i].val, slicer, size_dict, region)
         (verbose ≥ 2) && (@info "branching id = $i, g: $(nv(new_branch.p.g)), $(ne(new_branch.p.g)), rv = $(rvs[i])")
         (verbose ≥ 2) && (cc_ik = complexity(new_branch); @info "rethermalized code complexity: tc = $(cc_ik.tc), sc = $(cc_ik.sc)")
-        println("new_branch.r: ", candidates[i].val, " ", new_branch.r)
+        push!(brs, add_r(new_branch, r))
+    end
+    
+    return brs
+end
+
+function optimal_branches_ground_induced_sparsity(p::SpinGlassProblem{INT, VT}, code::DynamicNestedEinsum{Int}, r::RT, primal_bound::T, slicer::ContractionTreeSlicer, region::Vector{Int}, size_dict::Dict{Int, Int}, verbose::Int) where {INT, VT, RT, T}
+
+    cc = contraction_complexity(code, size_dict)
+    (verbose ≥ 2) && (@info "solving g: $(nv(p.g)), $(ne(p.g)), code complexity: tc = $(cc.tc), sc = $(cc.sc)")
+
+    tbl0 = branching_table_ground_induced_sparsity(p, slicer.table_solver, region, primal_bound)
+    (verbose ≥ 2) && (@info "table: $(length(tbl0.table))")
+
+    if primal_bound > 0
+        filtered_table = Vector{Vector{eltype(tbl0.table[1])}}()
+        n = tbl0.bit_length
+        INT_TYPE = eltype(tbl0.table[1][1])
+        
+        # Create a mask with all n bits set to 1
+        all_mask = (INT_TYPE(1) << n) - INT_TYPE(1)
+        
+        for i in 1:length(tbl0.table)
+            # Each row may contain multiple bitstrings, filter each one
+            filtered_row = eltype(tbl0.table[1])[]
+            for bs in tbl0.table[i]
+                clause = OptimalBranchingCore.Clause(all_mask, bs)
+                rv = sort!(removed_vertices_no_neighbors(region, p.g, clause))
+                # Compute LP bound with removed vertices
+                g_i, vmap_i = induced_subgraph(p.g, setdiff(1:nv(p.g), rv))
+                J_i, h_i, r_i = induced_spin_glass_subproblem(p.g, g_i, vmap_i, p.J, p.h, bs & all_mask, rv, region)
+                # LP_bound = spinglass_linear_LP_bound(g_i, J_i, h_i) + r + r_i
+                LP_bound = spinglass_linear_LP_bound(g_i, J_i, h_i) + r + r_i
+                if LP_bound > primal_bound - 0.0001
+                    push!(filtered_row, bs)
+                end
+            end
+            # Only add the row if it has at least one bitstring after filtering
+            if !isempty(filtered_row)
+                push!(filtered_table, filtered_row)
+            end
+        end
+        if isempty(filtered_table)
+            push!(filtered_table, tbl0.table[1])
+        end
+        println("tbl0_rows:",length(tbl0.table), " filtered_rows:",length(filtered_table))
+        # Create BranchingTable from filtered table rows
+        tbl = OptimalBranchingCore.BranchingTable(tbl0.bit_length, filtered_table)
+    else
+        tbl = tbl0
+    end
+
+    # special case: find reduction
+    reduction = OptimalBranchingCore.intersect_clauses(tbl, :dfs)
+    if !isempty(reduction)
+        c = reduction[1]
+        new_branch = generate_branch_no_reduction_spin_glass(p, code, sort!(removed_vertices_no_neighbors(region, p.g, c)), c.val, slicer, size_dict, region)
+        return [add_r(new_branch, r)]
+    end
+    
+    candidates, subsets, rvs = generate_subsets_no_neighbors(p.g, tbl, region)
+    (verbose ≥ 2) && (@info "candidates: $(length(rvs))")
+
+    losses = slicer_loss(p.g, code, rvs, slicer.brancher, slicer.sc_target, size_dict)
+
+    ## calculate the loss and select the best ones
+    optimal_branches_ids = set_cover(slicer.brancher, losses, subsets, length(tbl.table))
+
+    (verbose ≥ 2) && (@info "length of optimal branches: $(length(optimal_branches_ids))")
+
+    brs = Vector{SlicedBranch}() # brs for branches
+    for i in optimal_branches_ids
+        new_branch = generate_branch_no_reduction_spin_glass(p, code, rvs[i], candidates[i].val, slicer, size_dict, region)
+        (verbose ≥ 2) && (@info "branching id = $i, g: $(nv(new_branch.p.g)), $(ne(new_branch.p.g)), rv = $(rvs[i])")
+        (verbose ≥ 2) && (cc_ik = complexity(new_branch); @info "rethermalized code complexity: tc = $(cc_ik.tc), sc = $(cc_ik.sc)")
         push!(brs, add_r(new_branch, r))
     end
     
@@ -400,7 +512,18 @@ function sc_measure(sc_target::Int, code::DynamicNestedEinsum{Int}, rvs::Vector{
 end
 
 function set_cover(solver::GreedyBrancher, losses::Vector{Float64}, subsets::Vector{Vector{Int}}, n_clauses::Int)
-    return weighted_minimum_set_cover(solver.setcover_solver, losses, subsets, n_clauses)
+    try
+        return weighted_minimum_set_cover(solver.setcover_solver, losses, subsets, n_clauses)
+    catch e
+        if isa(e, AssertionError) || (isa(e, ErrorException) && occursin("infeasible", lowercase(string(e))))
+            # If IP solver fails, try LP solver as fallback
+            @warn "IP solver failed, falling back to LP solver: $e"
+            lp_solver = OptimalBranchingCore.LPSolver(optimizer = solver.setcover_solver.optimizer, verbose = solver.setcover_solver.verbose)
+            return weighted_minimum_set_cover(lp_solver, losses, subsets, n_clauses)
+        else
+            rethrow(e)
+        end
+    end
 end
 
 function set_cover_exactlyone(solver::GreedyBrancher, losses::Vector{Float64}, subsets::Vector{Vector{Int}}, n_clauses::Int)

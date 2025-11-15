@@ -116,3 +116,4 @@ function branching_table_ground_counting end
 function branching_table_counting end
 function branching_table_exhaustive end
 function branching_table_ground_counting_induced_sparsity end
+function branching_table_ground_induced_sparsity end

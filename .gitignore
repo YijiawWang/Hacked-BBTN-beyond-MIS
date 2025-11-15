@@ -3,6 +3,8 @@ ignore/
 **/logs/
 **/logs/**/*
 **/**/logs/**/*
+**/results/
+**/results/**/*
 
 # Julia artifacts and compiled files
 *.jl.cov

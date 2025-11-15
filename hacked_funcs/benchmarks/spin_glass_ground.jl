@@ -4,40 +4,43 @@ using GenericTensorNetworks, ProblemReductions
 using Graphs, TropicalNumbers, OMEinsum, OMEinsumContractionOrders,Random
 using Base.Threads
 using TensorBranching: ob_region, optimal_branches, ContractionTreeSlicer, uncompress, SlicedBranch, complexity
-using TensorBranching: optimal_branches_ground_counting, optimal_branches_ground_counting_induced_sparsity, initialize_code, GreedyBrancher, ScoreRS
+using TensorBranching: optimal_branches_ground_induced_sparsity, initialize_code, GreedyBrancher, ScoreRS
 using OptimalBranchingMIS: TensorNetworkSolver
 using OMEinsumContractionOrders: TreeSA
 using OMEinsum: DynamicNestedEinsum
 using OMEinsumContractionOrders: uniformsize
 using CSV, DataFrames
 using OrderedCollections
-include("../src/spin_glass_ground_counting.jl")
+include("../src/spin_glass_ground.jl")
 
 
 
 seed = 12345
 Random.seed!(seed)
-g = random_regular_graph(700, 3)
+# g = random_regular_graph(200, 3)
 # g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(30, 30, 0.8))
 # g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(60, 60, 0.8))
 
 
-# Create a 2D lattice (e.g., 10x10 = 100 vertices)
-lattice_rows = 60
-lattice_cols = 60
+
+lattice_rows = 70
+lattice_cols = 70
 # g = Graphs.grid([lattice_rows, lattice_cols])
+# g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(lattice_rows, lattice_cols, 0.8))
+g = random_regular_graph(600, 3)
 # J = ones(Float32, ne(g)) # Edge couplings
 # h = zeros(Float32, nv(g)) # Vertex fields
-J = randn(Float64, ne(g))  # Standard normal distribution (mean=0, std=1)
+# J = randn(Float64, ne(g))  # Standard normal distribution (mean=0, std=1)
 # J = 2.0 * rand(Bool, ne(g)) .- 1.0
 # h = randn(Float64, nv(g))
+J = randn(Float64, ne(g))
 h = ones(Float64, nv(g))
 p = SpinGlassProblem(g, J, h)
 
-filename = "rrg_n700_d3_randn_dfs_lp.csv"
+filename = "rrg_n600_d3_randn_dfs_lp.csv"
 # filename = "rksg_n30filling80_rand_dfs.csv"
-# filename = "rksg_n30filling80_randn_dfs.csv"
 # filename = "lattice_$(lattice_rows)x$(lattice_cols)_zf1_dfs_lp.csv"
+# filename = "rksg_n$(lattice_rows)filling80_randn_dfs_lp.csv"
 
 println("\nGraph info:")
 println("  Vertices: ", nv(g))
@@ -65,7 +68,7 @@ for sc_target in [31]
     brancher = GreedyBrancher()
     )
 
-    finished_slices = slice_dfs(p, slicer, code, 1)
+    finished_slices = slice_dfs_lp(p, slicer, code, true, 1)
    
 
     edge_ixs = [[minmax(e.src,e.dst)...] for e in Graphs.edges(g)]
@@ -92,7 +95,7 @@ for sc_target in [31]
         println("slice num: ", length(finished_slices))
         
         # Save results to CSV file
-        results_dir = "./results/spin_glass_ground_counting"
+        results_dir = "./results/spin_glass_ground"
         mkpath(results_dir)  # Create directory if it doesn't exist
         
         results_file = joinpath(results_dir, filename)

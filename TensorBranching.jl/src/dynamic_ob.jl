@@ -33,6 +33,11 @@ function solve_slice(branch::SlicedBranch{INT, VT, RT, MISProblem{INT, VT}}, ele
     return res
 end
 
+function solve_slice(branch::SlicedBranch{INT, VT, RT, SpinGlassProblem{INT, VT}}, element_type::Type, usecuda::Bool) where {INT, VT, RT}
+    net = GenericTensorNetwork(SpinGlass(branch.p.g, branch.p.J, branch.p.h), uncompress(branch.code), Dict{Int, Int}())
+    res =  Array(solve(net, SizeMax(), T = element_type, usecuda = usecuda))[].n
+    return res
+end
 
 function contract_slices(branches::Vector{SlicedBranch}, element_type::Type, usecuda::Bool)
     res = element_type[]

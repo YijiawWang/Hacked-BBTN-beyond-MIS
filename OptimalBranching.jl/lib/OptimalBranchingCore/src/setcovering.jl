@@ -338,6 +338,65 @@ function is_solved_by(xs::Vector{T}, sets_id::Vector{Vector{Int}}, num_items::In
 end
 
 """
+    save_set_cover_inputs(weights, subsets, num_items, solver_type, error_info)
+
+Saves the input parameters to a text file when solver fails.
+"""
+function save_set_cover_inputs(weights::AbstractVector, subsets::Vector{Vector{Int}}, num_items::Int, solver_type::String, error_info::String)
+    # Create a directory for failed cases if it doesn't exist
+    output_dir = "failed_set_cover_cases"
+    if !isdir(output_dir)
+        mkdir(output_dir)
+    end
+    
+    # Generate filename with timestamp (using time_ns for uniqueness)
+    timestamp = time_ns()
+    filename = joinpath(output_dir, "failed_set_cover_$(solver_type)_$(timestamp).txt")
+    
+    # Open file and write all information
+    open(filename, "w") do io
+        println(io, "=" ^ 80)
+        println(io, "Failed Set Cover Problem Input Parameters")
+        println(io, "=" ^ 80)
+        println(io, "")
+        println(io, "Solver Type: $solver_type")
+        println(io, "Timestamp: $timestamp")
+        println(io, "")
+        println(io, "Problem Dimensions:")
+        println(io, "  - num_items: $num_items")
+        println(io, "  - num_subsets: $(length(subsets))")
+        println(io, "")
+        println(io, "Error Information:")
+        println(io, error_info)
+        println(io, "")
+        println(io, "=" ^ 80)
+        println(io, "Weights:")
+        println(io, "=" ^ 80)
+        for (i, w) in enumerate(weights)
+            println(io, "weights[$i] = $w")
+        end
+        println(io, "")
+        println(io, "=" ^ 80)
+        println(io, "Subsets:")
+        println(io, "=" ^ 80)
+        for (i, subset) in enumerate(subsets)
+            println(io, "subsets[$i] = $subset")
+        end
+        println(io, "")
+        println(io, "=" ^ 80)
+        println(io, "Subsets (Julia format for easy copy-paste):")
+        println(io, "=" ^ 80)
+        println(io, "weights = $weights")
+        println(io, "")
+        println(io, "subsets = $subsets")
+        println(io, "")
+        println(io, "num_items = $num_items")
+    end
+    
+    return filename
+end
+
+"""
     weighted_minimum_set_cover(solver, weights::AbstractVector, subsets::Vector{Vector{Int}}, num_items::Int)
 
 Solves the weighted minimum set cover problem.
@@ -353,6 +412,15 @@ A vector of indices of selected subsets.
 """
 function weighted_minimum_set_cover(solver::LPSolver, weights::AbstractVector, subsets::Vector{Vector{Int}}, num_items::Int)
     nsc = length(subsets)
+
+    # Normalize weights if maximum is too large (>1e15)
+    # Filter finite values first, then find maximum
+    finite_weights = [w for w in weights if isfinite(w)]
+    max_weight = isempty(finite_weights) ? 0.0 : maximum(finite_weights)
+    if max_weight > 1e15
+        scale_factor = 1e6 / max_weight
+        weights = [w * scale_factor for w in weights]
+    end
 
     sets_id = [Vector{Int}() for _=1:num_items]
     for i in 1:nsc
@@ -379,6 +447,15 @@ end
 function weighted_minimum_set_cover(solver::IPSolver, weights::AbstractVector, subsets::Vector{Vector{Int}}, num_items::Int)
     nsc = length(subsets)
 
+    # Normalize weights if maximum is too large (>1e15)
+    # Filter finite values first, then find maximum
+    finite_weights = [w for w in weights if isfinite(w)]
+    max_weight = isempty(finite_weights) ? 0.0 : maximum(finite_weights)
+    if max_weight > 1e15
+        scale_factor = 1e6 / max_weight
+        weights = [w * scale_factor for w in weights]
+    end
+
     sets_id = [Vector{Int}() for _=1:num_items]
     for i in 1:nsc
         for j in subsets[i]
@@ -386,10 +463,9 @@ function weighted_minimum_set_cover(solver::IPSolver, weights::AbstractVector, s
         end
     end
 
-    # IP by JuMP
+    # LP by JuMP
     model = Model(solver.optimizer)
     !solver.verbose && set_silent(model)
-
     @variable(model, 0 <= x[i = 1:nsc] <= 1, Int)
     @objective(model, Min, sum(x[i] * weights[i] for i in 1:nsc))
     for i in 1:num_items
@@ -397,12 +473,22 @@ function weighted_minimum_set_cover(solver::IPSolver, weights::AbstractVector, s
     end
 
     optimize!(model)
-    @assert is_solved_and_feasible(model)
-    return pick_sets(value.(x), subsets, num_items)
+    xs = value.(x)
+    @assert is_solved_by(xs, sets_id, num_items)
+    return pick_sets(xs, subsets, num_items)
 end
+
 
 function weighted_minimum_set_cover_exactlyone(solver::IPSolver, weights::AbstractVector, subsets::Vector{Vector{Int}}, num_items::Int)
     nsc = length(subsets)
+    # Normalize weights if maximum is too large (>1e15)
+    # Filter finite values first, then find maximum
+    finite_weights = [w for w in weights if isfinite(w)]
+    max_weight = isempty(finite_weights) ? 0.0 : maximum(finite_weights)
+    if max_weight > 1e15
+        scale_factor = 1e6 / max_weight
+        weights = [w * scale_factor for w in weights]
+    end
 
     sets_id = [Vector{Int}() for _=1:num_items]
     for i in 1:nsc
@@ -411,10 +497,9 @@ function weighted_minimum_set_cover_exactlyone(solver::IPSolver, weights::Abstra
         end
     end
 
-    # IP by JuMP
+    # LP by JuMP
     model = Model(solver.optimizer)
     !solver.verbose && set_silent(model)
-
     @variable(model, 0 <= x[i = 1:nsc] <= 1, Int)
     @objective(model, Min, sum(x[i] * weights[i] for i in 1:nsc))
     for i in 1:num_items
@@ -422,12 +507,13 @@ function weighted_minimum_set_cover_exactlyone(solver::IPSolver, weights::Abstra
     end
 
     optimize!(model)
-    @assert is_solved_and_feasible(model)
-    
-    # For exactlyone, xs should be integer (0 or 1), so pick all sets with xs[i] == 1 deterministically
     xs = value.(x)
+    @assert is_solved_by(xs, sets_id, num_items)
+    
+    
     return [i for i in 1:nsc if xs[i] > 0.5]
 end
+
 
 # by viewing xs as the probability of being selected, we can use a random algorithm to pick the sets
 function pick_sets(xs::Vector, subsets::Vector{Vector{Int}}, num_items::Int)

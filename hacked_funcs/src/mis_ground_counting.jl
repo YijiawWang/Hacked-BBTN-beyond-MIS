@@ -70,8 +70,8 @@ function slice_dfs_lp(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, cod
     verbose ≥ 1 && @info "initial lp_bound: $lp_bound"
 
     while !isempty(unfinished_slices)
-        branch_to_slice = pop!(unfinished_slices)
-        sc_to_slice = pop!(scs)
+        branch_to_slice = popfirst!(unfinished_slices)
+        sc_to_slice = popfirst!(scs)
 
         verbose ≥ 1 && @info "slicing branch with sc: $sc_to_slice"
 
