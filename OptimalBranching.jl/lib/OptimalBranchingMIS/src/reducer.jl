@@ -408,15 +408,39 @@ function select_region(g::AbstractGraph, i::Int, n_max::Int, strategy::Symbol)
     end
 end
 
+function select_region_factorg(g::AbstractGraph, n_clauses::Int, i::Int, n_max::Int, strategy::Symbol)
+    if strategy == :neighbor
+        vs = intersect(select_region_neighbor_f(g, i, n_max), collect(1:nv(g)-n_clauses))
+        return length(vs) > n_max ? vs[1:n_max] : vs
+    elseif strategy == :mincut
+        return intersect(select_region_mincut(g, i, n_max), collect(1:nv(g)-n_clauses))
+    else
+        error("Invalid strategy: $strategy")
+    end
+end
+
 function select_region_neighbor(g::AbstractGraph, i::Int, n_max::Int)
     n_max = min(n_max, nv(g))
     vs = [i]
     while length(vs) < n_max 
         nbrs = OptimalBranchingMIS.open_neighbors(g, vs)
-        (length(vs) + length(nbrs) > n_max) && break
         (isempty(nbrs)) && break
-        append!(vs, nbrs)
+        push!(vs, nbrs[1])
     end
+    return vs
+end
+
+function select_region_neighbor_f(g::AbstractGraph, i::Int, n_max::Int)
+    n_max = min(n_max, nv(g))
+    vs = [i]
+    # First layer neighbors
+    nbrs = OptimalBranchingMIS.open_neighbors(g, vs)
+    append!(vs, nbrs)
+    # Second layer neighbors
+    nbrs = OptimalBranchingMIS.open_neighbors(g, vs)
+    append!(vs, nbrs)
+    # Remove duplicates and limit size
+    unique!(vs)
     return vs
 end
 

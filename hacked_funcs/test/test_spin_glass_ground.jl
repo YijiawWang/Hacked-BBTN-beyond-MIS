@@ -82,19 +82,48 @@ if abspath(PROGRAM_FILE) == @__FILE__
     seed = 12345
     Random.seed!(seed)
     # g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(20, 20, 0.8))
-    g = random_regular_graph(120, 3)
-    # g = Graphs.grid([25, 25])
-    J = 2.0 * rand(Bool, ne(g)) .- 1.0  # Random ±1
-    h = ones(Float64, nv(g))
+    bit_length = 7
+    n10 = rand(2^(bit_length-1):2^bit_length)
+    n20 = rand(2^(bit_length-1):2^bit_length)
+    n1 = prevprime(2^bit_length, 1)
+    n2 = prevprime(2^bit_length, 2)
+    # n1 = prevprime(n10, 1)
+    # n2 = prevprime(n20, 1)
+    factoring = Factoring(bit_length, bit_length, n1*n2) # initialize the Factoring problem
+    println("n1: ", n1, " n2: ", n2, " n1*n2: ", n1*n2)
+    g = reduction_graph()
+    paths = reduction_paths(g,Factoring,SpinGlass)
+    reduction_result = reduceto(paths[1], factoring)
+    target = target_problem(reduction_result)
+    println("Target problem vertices: ", nv(target.graph))
+    println("Target problem edges: ", ne(target.graph))
+    
+    # Calculate degree statistics
+    degrees = [degree(target.graph, v) for v in 1:nv(target.graph)]
+    avg_degree = sum(degrees) / length(degrees)
+    max_degree = maximum(degrees)
+    min_degree = minimum(degrees)
+    println("Target problem average degree: ", avg_degree)
+    println("Target problem max degree: ", max_degree)
+    println("Target problem min degree: ", min_degree)
+    
+    println("Target problem J: ", target.J)
+    println("Target problem h: ", target.h)
+
+    p = SpinGlassProblem(target.graph, target.J, target.h)
+    g = target.graph
+    J = target.J
+    h = target.h
     test_slice_dfs(g, J, h, 10)
     
 
 
-    #g = random_regular_graph(200, 3)
-    g = Graphs.grid([15, 15])
-    J = randn(Float64, ne(g))
-    h = randn(Float64, nv(g))
-    test_slice_dfs(g, J, h, 8)
+    # #g = random_regular_graph(200, 3)
+    # g = Graphs.grid([15, 15])
+    # # J = randn(Float64, ne(g))
+    # J = 2.0 * rand(Bool, ne(g)) .- 1.0  # Random ±1
+    # h = ones(Float64, nv(g))
+    # test_slice_dfs(g, J, h, 8)
    
 end
 

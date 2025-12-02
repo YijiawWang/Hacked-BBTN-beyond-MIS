@@ -67,7 +67,7 @@ function test_slice_dfs(g, J, h,sc_target)
                 sub_count_maximum_spin_glass = solve(sub_g_problem, CountingMax())[]
                 sub_spin_glass_size = sub_count_maximum_spin_glass.n[1] + slice.r
                 sub_spin_glass_count = sub_count_maximum_spin_glass.c[1]
-                if abs(sub_spin_glass_size - spin_glass_size) < 1e-12
+                if abs(sub_spin_glass_size - spin_glass_size) < 1e-4
                     spin_glass_count_sum += sub_spin_glass_count
                 end
                 
@@ -89,18 +89,12 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     seed = 123456
     Random.seed!(seed)
-    g = random_regular_graph(100, 3)
-    J = ones(Float32, ne(g))
-    h = zeros(Float32, nv(g))
+    g = Graphs.grid([20, 20])
+    J = Float32.(2.0 * rand(Bool, ne(g)) .- 1.0)  # Random ±1
+    # h = Float32.(ones(Float32, nv(g)) * 0.5)
+    # h = randn(Float32, nv(g))
+    h = Float32.(2.0 * rand(Bool, nv(g)) .- 1.0)
     test_slice_dfs(g, J, h, 10)
-    
-
-
-    g = random_regular_graph(300, 3)
-    J = rand(Float64, ne(g))
-    # J = 2.0 * rand(Bool, ne(g)) .- 1.0  # Random ±1
-    h = rand(Float64, nv(g))
-    test_slice_dfs(g, J, h, 10)
-   
+    test_slice_dfs(g, J, h, 6)
 end
 

@@ -165,33 +165,9 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     seed = 1234567
     Random.seed!(seed)
-    g = random_regular_graph(50, 3)
+    g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(20, 20, 0.8))
     weights = ones(Float32, nv(g))
-    # test_slice_bfs(g, weights, 4)
-    # test_slice_bfs(g, weights, 3)
-    test_slice_dfs_lp(g, weights, 4)
-    test_slice_dfs_lp(g, weights, 3)
-
-    g = random_regular_graph(50, 3)
-    weights = rand(Float64, nv(g))
-    # test_slice_bfs(g, weights, 4)
-    # test_slice_bfs(g, weights, 3)
-    test_slice_dfs_lp(g, weights, 4)
-    test_slice_dfs_lp(g, weights, 3)
-
-    # g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(10, 10, 0.8))
-    # weights = ones(Float32, nv(g))
-    # # test_slice_bfs(g, weights, 5)
-    # # test_slice_bfs(g, weights, 4)
-    # test_slice_dfs_lp(g, weights, 5)
-    # test_slice_dfs_lp(g, weights, 4)
-
-    # g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(10, 10, 0.8))
-    # weights = rand(Float64, nv(g))
-    # # test_slice_bfs(g, weights, 5)
-    # # test_slice_bfs(g, weights, 4)
-    # test_slice_dfs_lp(g, weights, 5)
-    # test_slice_dfs_lp(g, weights, 4)
-
+    test_slice_dfs_lp(g, weights, 10)
+    test_slice_dfs_lp(g, weights, 6)
 end
 

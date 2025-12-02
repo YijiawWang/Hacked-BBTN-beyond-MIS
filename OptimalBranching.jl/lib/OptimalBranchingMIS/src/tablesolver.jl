@@ -330,7 +330,7 @@ function OptimalBranchingCore.branching_table_ground_counting_induced_sparsity(p
 end
 
 function OptimalBranchingCore.branching_table_ground_induced_sparsity(p::SpinGlassProblem, solver::TensorNetworkSolver, vs::Vector{Int}, primal_bound::T) where T
-    tn_vs = union(OptimalBranchingMIS.open_neighbors(p.g, vs), vs)
+    tn_vs = union(OptimalBranchingMIS.open_neighbors(p.g, vs)[1:min(length(OptimalBranchingMIS.open_neighbors(p.g, vs)), 5)], vs)
     ovs = open_vertices(p.g, vs)
     tn_ovs = open_vertices(p.g, tn_vs)
     subg, vmap = induced_subgraph(p.g, vs)
@@ -345,6 +345,120 @@ function OptimalBranchingCore.branching_table_ground_induced_sparsity(p::SpinGla
 	configs = alpha_configs
     println("configs: ", length(configs))
     return BranchingTable(configs, false, vs, tn_vs, ovs)
+end
+
+function factor_region(g::SimpleGraph{Int}, clauses::Vector{Vector{Int}}, n_clauses::Int, vs::Vector{Int})
+    n_vars = nv(g) - n_clauses
+    vs_set = Set(vs)
+    
+    # Create mapping from variable index to its position in vs
+    var_to_vs_index = Dict{Int, Int}()
+    for (idx, var) in enumerate(vs)
+        var_to_vs_index[var] = idx
+    end
+    
+    # Find clauses whose all variable vertices are in vs
+    # Clause vertices are numbered from n_vars+1 to n_vars+n_clauses
+    clause_vertices_in_fvs = Int[]
+    sub_clause = Vector{Int}[]
+    
+    for clause_idx in 1:n_clauses
+        clause_vertex = n_vars + clause_idx
+        # Get all neighbors of this clause vertex (these are the variables in this clause)
+        clause_vars = neighbors(g, clause_vertex)
+        
+        # Check if all variables in this clause are in vs
+        if all(var -> var in vs_set, clause_vars)
+            push!(clause_vertices_in_fvs, clause_vertex)
+            
+            # Map clause variables to their indices in vs
+            mapped_clause = Int[]
+            for literal in clauses[clause_idx]
+                var_idx = abs(literal)
+                if haskey(var_to_vs_index, var_idx)
+                    new_var_idx = var_to_vs_index[var_idx]
+                    # Preserve the sign (positive or negative literal)
+                    if literal > 0
+                        push!(mapped_clause, new_var_idx)
+                    else
+                        push!(mapped_clause, -new_var_idx)
+                    end
+                end
+            end
+            push!(sub_clause, mapped_clause)
+        end
+    end
+    
+    # fvs = vs union clause vertices whose all variables are in vs
+    fvs = union(vs, clause_vertices_in_fvs)
+    return fvs, sub_clause
+end
+
+
+function OptimalBranchingCore.branching_table_ground_induced_sparsity(p::MaxSatProblem, solver::TensorNetworkSolver, vs::Vector{Int}, primal_bound::T) where T
+    vs_fneighbor = OptimalBranchingMIS.open_neighbors(p.g, vs)
+    open_neighbors_result = OptimalBranchingMIS.open_neighbors(p.g, vs_fneighbor)
+    tn_vs = union(vs, open_neighbors_result[1:min(10, length(open_neighbors_result))])
+    # tn_vs = copy(vs)
+    fvs, sub_clause = factor_region(p.g, p.clauses, length(p.clauses), vs)
+    tn_fvs, tn_sub_clause = factor_region(p.g, p.clauses, length(p.clauses), tn_vs)
+    ovs = open_vertices(p.g, fvs)
+    tn_ovs = open_vertices(p.g, tn_fvs)
+    tn_subg, tn_vmap = induced_subgraph(p.g, tn_fvs)
+    
+    # Remove isolated variable vertices from tn_vs
+    # Check for isolated vertices in tn_subg (degree == 0)
+    n_vars_old = nv(p.g) - length(p.clauses)
+    isolated_vars_in_tn_vs = Int[]
+    for i in 1:nv(tn_subg)
+        if degree(tn_subg, i) == 0
+            # tn_vmap[i] is the original vertex index in p.g
+            orig_vertex = tn_vmap[i]
+            # Check if it's a variable vertex (not a clause vertex) and in tn_vs
+            if orig_vertex <= n_vars_old && orig_vertex in tn_vs
+                push!(isolated_vars_in_tn_vs, orig_vertex)
+            end
+        end
+    end
+    
+    # Remove isolated variables from tn_vs
+    if !isempty(isolated_vars_in_tn_vs)
+        tn_vs = setdiff(tn_vs, isolated_vars_in_tn_vs)
+        vs = setdiff(vs, isolated_vars_in_tn_vs)
+        println("Removed isolated variables from tn_vs: ", isolated_vars_in_tn_vs)
+        println("Updated tn_vs: ", tn_vs)
+        
+        # Recompute tn_fvs and related structures after removing isolated variables
+        tn_fvs, tn_sub_clause = factor_region(p.g, p.clauses, length(p.clauses), tn_vs)
+        tn_ovs = open_vertices(p.g, tn_fvs)
+        tn_subg, tn_vmap = induced_subgraph(p.g, tn_fvs)
+    end
+    
+    sat = graph_clauses_to_sat(tn_subg, tn_sub_clause, nv(tn_subg) - length(tn_sub_clause), p.use_constraint)
+    
+    # Reorder tn_vs to match sat symbols order for correct configuration extraction
+    sat_symbols = sat.symbols
+    sat_indices = [parse(Int, string(s)[2:end]) for s in sat_symbols]
+    if all(idx -> idx in 1:length(tn_vs), sat_indices) && length(unique(sat_indices)) == length(tn_vs)
+         tn_vs_sorted = tn_vs[sat_indices]
+    else
+         tn_vs_sorted = sat_indices
+    end
+    println("tn_vs_sorted: ", tn_vs_sorted)
+    # Only open boundary vertices to keep tensor size manageable
+    tn_openvertices = Int[findfirst(==(v), tn_vs_sorted) for v in tn_ovs]
+    println("tn_openvertices: ", tn_openvertices)    
+    problem = GenericTensorNetwork(sat; openvertices=tn_openvertices, optimizer = GreedyMethod())
+    alpha_tensor = solve(problem, SizeMax())
+    alpha_configs = solve(problem, ConfigsMax(; bounded=false))
+    alpha_configs[map(iszero, alpha_tensor)] .= Ref(zero(eltype(alpha_configs)))
+    # configs = alpha_configs
+    configs = filter(x -> isfinite(x.n), alpha_configs)
+    if length(configs) == 0
+        return nothing
+    end
+    println("configs: ", length(configs),",",ovs)
+    return BranchingTable(configs, false, vs, tn_vs_sorted, ovs)
 end
 
 """
@@ -479,4 +593,40 @@ function prune_by_env(tbl::BranchingTable{INT}, p::MISProblem, vertices) where{I
     return BranchingTable(OptimalBranchingCore.nbits(tbl), new_table)
 end
 
-
+function graph_clauses_to_sat(g::SimpleGraph, clauses::Vector{Vector{Int}}, n_vars::Int, use_constraint::Bool = false)
+    n_clauses = length(clauses)
+    
+    # Validate the number of vertices in the graph
+    @assert nv(g) == n_vars + n_clauses "Graph should have $(n_vars + n_clauses) vertices, but has $(nv(g))"
+    
+    # Create variable symbols (using x1, x2, ...)
+    var_symbols = [Symbol("x$i") for i in 1:n_vars]
+    
+    # Build CNF clauses
+    cnf_clauses = CNFClause{Symbol}[]
+    
+    for (clause_idx, clause) in enumerate(clauses)
+        bool_vars = BoolVar{Symbol}[]
+        
+        # Process each literal in the clause
+        for literal in clause
+            # Get the variable index (absolute value)
+            var_idx = abs(literal)
+            @assert 1 <= var_idx <= n_vars "Variable index $var_idx out of range [1, $n_vars]"
+            
+            # Determine if it's a positive or negative literal
+            is_negated = literal < 0
+            
+            # Create BoolVar
+            push!(bool_vars, BoolVar(var_symbols[var_idx], is_negated))
+        end
+        
+        # Create CNFClause
+        push!(cnf_clauses, CNFClause(bool_vars))
+    end
+    
+    # Create CNF object
+    cnf = CNF(cnf_clauses)
+   
+    return Satisfiability(cnf; use_constraints=use_constraint)
+end

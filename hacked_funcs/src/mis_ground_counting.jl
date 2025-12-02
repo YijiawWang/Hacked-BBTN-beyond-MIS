@@ -7,7 +7,7 @@ using OMEinsum: DynamicNestedEinsum
 using OMEinsumContractionOrders: uniformsize
 using TensorBranching: show_status, LP_MWIS, solve_slice
 using CUDA, CuTropicalGEMM, BenchmarkTools
-CUDA.device!(0)
+CUDA.device!(2)
 
 function slice_bfs(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, verbose::Int = 0) where {INT, VT}
     # Initialize with the first branch

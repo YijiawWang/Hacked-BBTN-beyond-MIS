@@ -41,10 +41,15 @@ function _slice_bfs(unfinished_slices::Vector{SlicedBranch}, slicer::Contraction
     Threads.@threads for chunk in chunks
         for i in chunk
             branch = unfinished_slices[i]
-            uncompressed_code = uncompress(branch.code)
-            region, loss = ob_region(branch.p.g, uncompressed_code, slicer, slicer.region_selector, size_dict, verbose)
-            branches = optimal_branches_counting(branch.p, uncompressed_code, branch.r, slicer, region, size_dict, verbose)
-            temp_slices[i] = branches
+            cc = complexity(branch)
+            if cc.sc ≤ slicer.sc_target
+                temp_slices[i] = [branch]
+            else
+                uncompressed_code = uncompress(branch.code)
+                region, loss = ob_region(branch.p.g, uncompressed_code, slicer, slicer.region_selector, size_dict, verbose)
+                branches = optimal_branches_counting(branch.p, uncompressed_code, branch.r, slicer, region, size_dict, verbose)
+                temp_slices[i] = branches
+            end
         end
     end
     

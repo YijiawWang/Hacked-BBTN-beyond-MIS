@@ -1,5 +1,5 @@
 using OptimalBranching.OptimalBranchingCore: candidate_clauses, covered_items
-using OptimalBranching.OptimalBranchingMIS: removed_vertices, removed_vertices_no_neighbors, readbit,select_region, clause_size
+using OptimalBranching.OptimalBranchingMIS: removed_vertices, removed_vertices_no_neighbors, readbit,select_region, clause_size, select_region_factorg, graph_clauses_to_sat
 
 function ob_region(g::SimpleGraph{Int}, code::DynamicNestedEinsum{Int}, slicer::ContractionTreeSlicer, selector::ScoreRS, size_dict::Dict{Int, Int}, verbose::Int)
 
@@ -34,10 +34,34 @@ function ob_region(g::SimpleGraph{Int}, code::DynamicNestedEinsum{Int}, slicer::
     end
 
     (verbose ≥ 2) && (@info "best region: $best_region \n loss: $best_loss")
-
+    println("region size: $(length(best_region))")
     return best_region, best_loss
 end
 
+function ob_region_factorg(g::SimpleGraph{Int}, n_clauses::Int, code::DynamicNestedEinsum{Int}, slicer::ContractionTreeSlicer, selector::ScoreRS, size_dict::Dict{Int, Int}, verbose::Int)
+
+    large_tensors = list_subtree(code, size_dict, slicer.sc_target)
+    large_tensors_iys = [t.eins.iy for t in large_tensors]
+    unique_large_tensors_iys = unique!(vcat(large_tensors_iys...))
+
+    regions = [Vector{Int}() for _ in unique_large_tensors_iys]
+    Threads.@threads for i in 1:length(unique_large_tensors_iys)
+        iy = unique_large_tensors_iys[i]
+        region_i = OptimalBranchingMIS.select_region_factorg(g, n_clauses, iy, selector.n_max, selector.strategy)
+        regions[i] = region_i
+    end
+    if selector.loss == :sc_score
+        losses = sc_score(slicer.sc_target, code, regions, size_dict)
+        best_loss = minimum(losses)
+        best_region = regions[argmin(losses)]
+    else
+        error("Loss function $(selector.loss) not implemented")
+    end
+
+    (verbose ≥ 2) && (@info "best region: $best_region \n loss: $best_loss")
+    # println("region size: $(length(best_region))")
+    return best_region, best_loss
+end
 
 # I notice that in some special cases, different candidates can have the same removed vertices
 # in this case, I merge the covered items of these candidates and take the maximum fixed ones
@@ -355,6 +379,47 @@ function optimal_branches_ground_induced_sparsity(p::SpinGlassProblem{INT, VT}, 
     return brs
 end
 
+function optimal_branches_ground_induced_sparsity(p::MaxSatProblem{INT, VT}, code::DynamicNestedEinsum{Int}, r::RT, slicer::ContractionTreeSlicer, region::Vector{Int}, size_dict::Dict{Int, Int}, verbose::Int) where {INT, VT, RT, T}
+
+    cc = contraction_complexity(code, size_dict)
+    (verbose ≥ 2) && (@info "solving g: $(nv(p.g)), $(ne(p.g)), code complexity: tc = $(cc.tc), sc = $(cc.sc)")
+
+    tbl0 = branching_table_ground_induced_sparsity(p, slicer.table_solver, region, 0.0)
+    (verbose ≥ 2) && (@info "table: $(length(tbl0.table))")
+    tbl = tbl0
+    if tbl == nothing
+        return []
+    end
+    
+    # special case: find reduction
+    reduction = OptimalBranchingCore.intersect_clauses(tbl, :dfs)
+    if !isempty(reduction)
+        c = reduction[1]
+        new_branch = generate_branch_no_reduction_max_sat(p, code, sort!(removed_vertices_no_neighbors(region, p.g, c)), c.val, slicer, size_dict, region)
+        return [add_r(new_branch, r)]
+    end
+    
+    candidates, subsets, rvs = generate_subsets_no_neighbors(p.g, tbl, region)
+    (verbose ≥ 2) && (@info "candidates: $(length(rvs))")
+
+    losses = slicer_loss(p.g, code, rvs, slicer.brancher, slicer.sc_target, size_dict)
+
+    ## calculate the loss and select the best ones
+    optimal_branches_ids = set_cover(slicer.brancher, losses, subsets, length(tbl.table))
+
+    (verbose ≥ 2) && (@info "length of optimal branches: $(length(optimal_branches_ids))")
+
+    brs = Vector{SlicedBranch}() # brs for branches
+    for i in optimal_branches_ids
+        new_branch = generate_branch_no_reduction_max_sat(p, code, rvs[i], candidates[i].val, slicer, size_dict, region)
+        (verbose ≥ 2) && (@info "branching id = $i, g: $(nv(new_branch.p.g)), $(ne(new_branch.p.g)), rv = $(rvs[i])")
+        (verbose ≥ 2) && (cc_ik = complexity(new_branch); @info "rethermalized code complexity: tc = $(cc_ik.tc), sc = $(cc_ik.sc)")
+        push!(brs, add_r(new_branch, r))
+    end
+    
+    return brs
+end
+
 function optimal_branches_counting(p::MISProblem{INT, VT}, code::DynamicNestedEinsum{Int}, r::RT, slicer::ContractionTreeSlicer, region::Vector{Int}, size_dict::Dict{Int, Int}, verbose::Int) where {INT, VT, RT}
 
     cc = contraction_complexity(code, size_dict)
@@ -636,3 +701,23 @@ function generate_branch_no_reduction_spin_glass(p::SpinGlassProblem{INT, VT}, c
     return SlicedBranch(SpinGlassProblem(g_i, J_i, h_i), re_code_i, r)
 end
 
+function generate_branch_no_reduction_max_sat(p::MaxSatProblem{INT, VT}, code::DynamicNestedEinsum{Int}, removed_vertices::Vector{Int}, val, slicer::ContractionTreeSlicer, size_dict::Dict{Int, Int}, region::Vector{Int}) where {INT, VT, RT}
+    g = p.g
+    clauses = p.clauses 
+    r = 0.0
+    g_new, clauses_new, remaining_vars, r = induced_sat_subproblem(g, clauses, val, removed_vertices, region)
+    
+    nv(g_new) == 0 && return SlicedBranch(MaxSatProblem(g_new, clauses_new, p.use_constraint), nothing, r)
+    nv(g_new) == 1 && return SlicedBranch(MaxSatProblem(g_new, clauses_new, p.use_constraint), nothing, r)
+    (nv(g_new) == 2 && ne(g_new) == 1) && return SlicedBranch(MaxSatProblem(g_new, clauses_new, p.use_constraint), nothing, r+1.0)
+    
+    sc0 = contraction_complexity(code, size_dict).sc
+    println("sc0: $sc0")
+    # code_i = update_code(g_new, clauses_new, code, remaining_vars)   
+    # re_code_i = refine(code_i, size_dict, slicer.refiner, slicer.sc_target, sc0)
+    sat_sub = graph_clauses_to_sat(g_new, clauses_new, nv(g_new) - length(clauses_new))
+    tn = GenericTensorNetwork(sat_sub; optimizer = TreeSA())
+    re_code_i = tn.code
+
+    return SlicedBranch(MaxSatProblem(g_new, clauses_new, p.use_constraint), re_code_i, r)
+end

@@ -633,3 +633,159 @@ function QIP_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.
         end
     end
 end 
+
+
+function induced_sat_subproblem(g_old::SimpleGraph, clauses::Vector{Vector{Int}}, val, removed_vertices::Vector{Int}, region::Vector{Int})
+    r = 0.0
+    n_clauses_old = length(clauses)
+    n_vars_old = nv(g_old) - n_clauses_old
+    region_index_map = Dict{Int, Int}()
+    for (idx, v) in enumerate(region)
+        region_index_map[v] = idx
+    end
+    # Iterate through clauses, simultaneously check satisfaction and remove relevant literals
+    new_clauses = Vector{Int}[]
+    removed_vars_set = Set(removed_vertices)
+    clause_to_be_removed = falses(n_clauses_old)  # Record which clauses are to be removed (satisfied or empty)
+    # Precompute values for each removed_vertex
+    removed_vars_values = Dict{Int, Int}()
+    for v in removed_vertices
+        k = get(region_index_map, v, nothing)
+        if k !== nothing
+            if val isa AbstractVector
+                removed_vars_values[v] = val[k]
+            else
+                removed_vars_values[v] = readbit(val, k)
+            end
+        end
+    end
+    
+    for (clause_idx, clause) in enumerate(clauses)
+        removing_clause = false
+        new_clause = Int[]
+        
+        for literal in clause
+            var_idx = abs(literal)
+            
+            if var_idx in removed_vars_set
+                # Variable is in removed_vertices, check if clause is satisfied
+                val_bit = removed_vars_values[var_idx]
+                is_positive = (literal > 0)
+                
+                # Check if satisfied: positive literal and val == 1, or negative literal and val == 0
+                if (is_positive && val_bit == 1) || (!is_positive && val_bit == 0)
+                    # Clause is satisfied, remove entirely (don't add to new_clause)
+                    removing_clause = true
+                    r += 1.0
+                    break  # Clause is satisfied, no need to continue checking
+                end
+                # If not satisfied, don't add this literal to the new clause (equivalent to removal)
+            else
+                # Variable is not in removed_vertices, keep this literal
+                push!(new_clause, literal)
+            end
+        end
+        
+        # Record clauses to be removed (satisfied or empty)
+        if removing_clause || isempty(new_clause)
+            clause_to_be_removed[clause_idx] = true
+        else
+            push!(new_clauses, new_clause)
+        end
+    end
+    
+    # Step 3: Count which variables are completely deleted (no longer appear in any clause)
+    used_vars = Set{Int}()
+    for clause in new_clauses
+        for literal in clause
+            push!(used_vars, abs(literal))
+        end
+    end
+    
+    # Find completely deleted variables (in region but not in used_vars)
+    deleted_vars = setdiff(Set(region), used_vars)
+    
+    # Step 4: Find deleted clause vertices
+    # Clause vertex numbering: n_vars_old + clause_idx
+    deleted_clause_vertices = Int[]
+    for (idx, removing_clause) in enumerate(clause_to_be_removed)
+        if removing_clause
+            push!(deleted_clause_vertices, n_vars_old + idx)
+        end
+    end
+    
+    # Step 5: Create new graph, remove deleted vertices
+    # Vertices to remove: deleted_vars (variable vertices) and deleted_clause_vertices (clause vertices)
+    all_removed_vertices = union(Set(deleted_vars), Set(deleted_clause_vertices))
+    remaining_vertices = setdiff(Set(1:nv(g_old)), all_removed_vertices)
+    
+    # Create induced subgraph
+    g_new, vmap = induced_subgraph(g_old, collect(remaining_vertices))
+    
+    # Step 6: Reorder graph vertices so variable vertices come first, clause vertices come after
+    # vmap[i] is the old vertex index corresponding to the i-th vertex in the new graph
+    # Create inverse mapping: old_vertex -> new_vertex_position (position in g_new)
+    ivmap = Dict{Int, Int}()
+    for (new_pos, old_vertex) in enumerate(vmap)
+        ivmap[old_vertex] = new_pos
+    end
+    
+    # Find all remaining variable vertices and clause vertices
+    remaining_vars = sort([v for v in vmap if v <= n_vars_old])
+    remaining_clauses = sort([v for v in vmap if v > n_vars_old])  # Clause vertices in old graph have index > n_vars_old
+    
+    # Create new vertex order: variables first, clauses after
+    new_vertex_order = vcat(remaining_vars, remaining_clauses)
+    n_vars_new = length(remaining_vars)
+    n_clauses_new = length(remaining_clauses)
+    
+    # Create mapping from old vertex to new vertex position (in reordered graph)
+    vertex_remap = Dict{Int, Int}()
+    for (new_pos, old_vertex) in enumerate(new_vertex_order)
+        vertex_remap[old_vertex] = new_pos
+    end
+    
+    # Create mapping from position in g_new to position after reordering
+    g_new_to_reordered = Dict{Int, Int}()
+    for old_vertex in new_vertex_order
+        g_new_pos = ivmap[old_vertex]
+        reordered_pos = vertex_remap[old_vertex]
+        g_new_to_reordered[g_new_pos] = reordered_pos
+    end
+    
+    # Create reordered graph
+    g_reordered = SimpleGraph(length(new_vertex_order))
+    for e in edges(g_new)
+        src_old = src(e)
+        dst_old = dst(e)
+        src_new = g_new_to_reordered[src_old]
+        dst_new = g_new_to_reordered[dst_old]
+        add_edge!(g_reordered, src_new, dst_new)
+    end
+    
+    # Create variable mapping: old_var_index -> new_var_index (variables are continuously numbered from 1 after reordering)
+    var_remap = Dict(v => new_idx for (new_idx, v) in enumerate(remaining_vars))
+    
+    # Remap variable indices in clauses
+    new_clauses_remapped = Vector{Int}[]
+    for clause in new_clauses
+        new_clause = Int[]
+        for literal in clause
+            old_var = abs(literal)
+            if haskey(var_remap, old_var)
+                new_var = var_remap[old_var]
+                # 保持正负号
+                if literal > 0
+                    push!(new_clause, new_var)
+                else
+                    push!(new_clause, -new_var)
+                end
+            end
+        end
+        if !isempty(new_clause)
+            push!(new_clauses_remapped, new_clause)
+        end
+    end
+    
+    return g_reordered, new_clauses_remapped, remaining_vars, r
+end

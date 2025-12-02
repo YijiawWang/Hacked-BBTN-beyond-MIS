@@ -170,3 +170,44 @@ Base.show(io::IO, p::SpinGlassProblem) = print(io, "SpinGlassProblem($(nv(p.g)))
 OptimalBranchingCore.has_zero_size(p::SpinGlassProblem) = nv(p.g) == 0
 Base.:(==)(p1::SpinGlassProblem{T1}, p2::SpinGlassProblem{T2}) where {T1, T2} = 
 (T1 == T2) && (p1.g == p2.g) && (p1.J == p2.J) && (p1.h == p2.h)
+
+
+"""
+    mutable struct MaxSatProblem{INT <: Integer, VT} <: AbstractProblem
+
+Represents a Maximum Satisfiability (Max SAT) problem.
+
+# Fields
+- `g::SimpleGraph`: The graph associated with the Max SAT problem.
+  - The first n_vars vertices (1 to n_vars) correspond to variables
+  - The remaining vertices (n_vars+1 to n_vars+n_clauses) correspond to clauses
+  - An edge connects a variable vertex to a clause vertex if the variable appears in that clause
+- `clauses::Vector{Vector{Int}}`: The list of clauses, where each clause is a vector of integers.
+  - Positive integers represent positive literals (variables)
+  - Negative integers represent negative literals (negated variables)
+
+# Type Parameters
+- `INT`: Integer type for bit basis operations
+- `VT`: Placeholder type parameter for compatibility with SlicedBranch (not used, set to Nothing)
+
+# Methods
+- `copy(p::MaxSatProblem)`: Creates a copy of the given `MaxSatProblem`.
+- `Base.show(io::IO, p::MaxSatProblem)`: Displays the number of variables and clauses in the `MaxSatProblem`.
+"""
+mutable struct MaxSatProblem{INT <: Integer, VT} <: AbstractProblem
+    g::SimpleGraph{Int}
+    clauses::Vector{Vector{Int}}
+    use_constraint::Bool
+    function MaxSatProblem(g::SimpleGraph{Int}, clauses::Vector{Vector{Int}}, use_constraint::Bool = false)
+        new{BitBasis.longinttype(nv(g), 2), Nothing}(g, clauses, use_constraint)
+    end
+end
+Base.copy(p::MaxSatProblem) = MaxSatProblem(copy(p.g), [copy(c) for c in p.clauses], p.use_constraint)
+function Base.show(io::IO, p::MaxSatProblem)
+    n_vars = nv(p.g) - length(p.clauses)
+    n_clauses = length(p.clauses)
+    print(io, "MaxSatProblem($n_vars vars, $n_clauses clauses, use_constraint = $(p.use_constraint))")
+end
+OptimalBranchingCore.has_zero_size(p::MaxSatProblem) = nv(p.g) == 0
+Base.:(==)(p1::MaxSatProblem{T1, V1}, p2::MaxSatProblem{T2, V2}) where {T1, T2, V1, V2} = 
+    (T1 == T2) && (V1 == V2) && (p1.g == p2.g) && (p1.clauses == p2.clauses) && (p1.use_constraint == p2.use_constraint)

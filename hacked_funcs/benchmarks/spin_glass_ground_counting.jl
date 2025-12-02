@@ -1,10 +1,10 @@
 using OptimalBranching
 using OptimalBranching.OptimalBranchingCore, OptimalBranching.OptimalBranchingMIS
 using GenericTensorNetworks, ProblemReductions
-using Graphs, TropicalNumbers, OMEinsum, OMEinsumContractionOrders,Random
+using Graphs, TropicalNumbers, OMEinsum, OMEinsumContractionOrders, Random
 using Base.Threads
 using TensorBranching: ob_region, optimal_branches, ContractionTreeSlicer, uncompress, SlicedBranch, complexity
-using TensorBranching: optimal_branches_ground_counting, optimal_branches_ground_counting_induced_sparsity, initialize_code, GreedyBrancher, ScoreRS
+using TensorBranching: optimal_branches_ground_counting, initialize_code, GreedyBrancher, ScoreRS
 using OptimalBranchingMIS: TensorNetworkSolver
 using OMEinsumContractionOrders: TreeSA
 using OMEinsum: DynamicNestedEinsum
@@ -13,110 +13,171 @@ using CSV, DataFrames
 using OrderedCollections
 include("../src/spin_glass_ground_counting.jl")
 
+# Set random seed
+Random.seed!(12345)
 
+# Input and output directories
+input_dir = "models/spin_glass_models"
+output_dir = "results/spin_glass_ground_counting_scip"
+mkpath(output_dir)  # Create output directory
 
-seed = 12345
-Random.seed!(seed)
-g = random_regular_graph(700, 3)
-# g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(30, 30, 0.8))
-# g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(60, 60, 0.8))
+# Get all model files
+model_files = filter(x -> endswith(x, ".model"), readdir(input_dir, join=true))
 
+# Results file
+results_file = joinpath(output_dir, "spin_glass_ground_counting_results.csv")
 
-# Create a 2D lattice (e.g., 10x10 = 100 vertices)
-lattice_rows = 60
-lattice_cols = 60
-# g = Graphs.grid([lattice_rows, lattice_cols])
-# J = ones(Float32, ne(g)) # Edge couplings
-# h = zeros(Float32, nv(g)) # Vertex fields
-J = randn(Float64, ne(g))  # Standard normal distribution (mean=0, std=1)
-# J = 2.0 * rand(Bool, ne(g)) .- 1.0
-# h = randn(Float64, nv(g))
-h = ones(Float64, nv(g))
-p = SpinGlassProblem(g, J, h)
-
-filename = "rrg_n700_d3_randn_dfs_lp.csv"
-# filename = "rksg_n30filling80_rand_dfs.csv"
-# filename = "rksg_n30filling80_randn_dfs.csv"
-# filename = "lattice_$(lattice_rows)x$(lattice_cols)_zf1_dfs_lp.csv"
-
-println("\nGraph info:")
-println("  Vertices: ", nv(g))
-println("  Edges: ", ne(g))
-
-
-# Create a contraction code for the spin glass problem using initialize_code
-seed = 1
-Random.seed!(seed)
-code = initialize_code(g, TreeSA())
-cc = contraction_complexity(code, uniformsize(code, 2))
-println("Code complexity: ", cc)
-
-
-for sc_target in [31]
-    println("=" ^ 60)
-    println("sc_target: ", sc_target)
-    cc = contraction_complexity(code, uniformsize(code, 2))
-    println("Code complexity: ", cc)
-    println("=" ^ 60)
-    slicer = ContractionTreeSlicer(
-    sc_target = sc_target,
-    table_solver = TensorNetworkSolver(),
-    region_selector = ScoreRS(n_max=10),
-    brancher = GreedyBrancher()
+# Create or open results file
+if isfile(results_file)
+    # Append to existing file
+    results_df = CSV.read(results_file, DataFrame)
+else
+    # Create new DataFrame with headers
+    results_df = DataFrame(
+        model_name = String[],
+        vertices = Int[],
+        edges = Int[],
+        sc_target = Int[],
+        total_tc = Float32[],
+        slice_num = Int[],
+        total_tc_slicing = Float32[],
+        sc_slicing = Float32[],
+        slice_num_slicing = Int[]
     )
+    CSV.write(results_file, results_df)  # Write header
+end
 
-    finished_slices = slice_dfs(p, slicer, code, 1)
-   
+# Fixed space complexity target
+sc_target = 31
 
-    edge_ixs = [[minmax(e.src,e.dst)...] for e in Graphs.edges(g)]
-    vertex_ixs = [[v] for v in 1:nv(g)]
+for model_file in model_files
+    # Read model file
+    graph = SimpleGraph()
+    edge_weights = Dict{Tuple{Int,Int}, Float64}()
+    open(model_file, "r") do io
+        # Skip metadata lines until vertex coordinates
+        while !eof(io)
+            line = readline(io)
+            if startswith(line, "vertices: ")
+                n_vertices = parse(Int, split(line)[2])
+                graph = SimpleGraph(n_vertices)
+            elseif startswith(line, "edges: ")
+                n_edges = parse(Int, split(line)[2])
+            elseif line == "vertex_coordinates:"
+                break
+            end
+        end
+        
+        # Skip vertex coordinates
+        while !eof(io)
+            line = readline(io)
+            if line == ""
+                break
+            end
+        end
+        
+        # Read edges with weights
+        if readline(io) == "edges_with_weights:"  # Skip this line
+            while !eof(io)
+                line = readline(io)
+                if isempty(line)
+                    continue
+                end
+                parts = split(line)
+                if length(parts) >= 3
+                    u = parse(Int, parts[1])
+                    v = parse(Int, parts[2])
+                    weight = parse(Float64, parts[3])
+                    add_edge!(graph, u, v)
+                    edge_weights[(min(u,v), max(u,v))] = weight
+                end
+            end
+        end
+    end
+    
+    edge_weights_vec = Vector{Float32}(undef, ne(graph))
+    for (idx, e) in enumerate(edges(graph))
+        u, v = src(e), dst(e)
+        key = (min(u, v), max(u, v))
+        edge_weights_vec[idx] = Float32(edge_weights[key])
+    end
+    h = Float32.(ones(Float32, nv(graph)) * 0.5)
+    
+    p = SpinGlassProblem(graph, edge_weights_vec, h)
+    
+    # Extract model name
+    model_name = basename(model_file)
+    
+    println("\nProcessing model: $model_name")
+    println("  Vertices: ", nv(graph))
+    println("  Edges: ", ne(graph))
+    
+    # Create contraction code
+    seed = 1
+    Random.seed!(seed)
+    code = initialize_code(graph, TreeSA())
+    cc = contraction_complexity(code, uniformsize(code, 2))
+    println("  Code complexity: ", cc)
+    
+    println("  " * "="^40)
+    println("  sc_target: $sc_target")
+    
+    # Set up slicer
+    slicer = ContractionTreeSlicer(
+        sc_target = sc_target,
+        table_solver = TensorNetworkSolver(),
+        region_selector = ScoreRS(n_max=10),
+        brancher = GreedyBrancher()
+    )
+    
+    # Compute slicing results (for the entire graph)
+    edge_ixs = [[minmax(e.src,e.dst)...] for e in Graphs.edges(graph)]
+    vertex_ixs = [[v] for v in 1:nv(graph)]
     ixs = vcat(edge_ixs, vertex_ixs)
     code0 = OMEinsumContractionOrders.EinCode([ixs...], Int[])
-    seed = 1
     Random.seed!(seed)
     optcode_sliced = optimize_code(code0, uniformsize(code0, 2), TreeSA(), slicer=TreeSASlicer(score=ScoreFunction(sc_target=sc_target)))
     total_tc_slicing, sc_slicing = OMEinsum.timespace_complexity(optcode_sliced, uniformsize(code0, 2))
     slice_num_slicing = length(optcode_sliced.slicing)
-    println("total_tc_slicing: ", total_tc_slicing)
-    println("sc_slicing: ", sc_slicing)
-    println("nslices: ", slice_num_slicing)
+    println("  Slicing results:")
+    println("    Total tc (slicing): ", total_tc_slicing)
+    println("    Space complexity (slicing): ", sc_slicing)
+    println("    Number of slices (slicing): ", slice_num_slicing)
     
-    global total_tc = 0.0
+    # Run ground state counting
+    finished_slices = slice_dfs_lp(p, slicer, code, true, 1)
+
+    # Calculate total time complexity (using Float32)
+    total_tc = -Inf32  # Initialize to negative infinity (Float32)
     if !isempty(finished_slices)
-        for (i, slice) in enumerate(finished_slices[1:length(finished_slices)])
-            global total_tc
-            cc = complexity(slice)
-            total_tc = log2(2^total_tc + 2^(cc.tc) - 1)
+        for slice in finished_slices
+            cc_val = complexity(slice).tc
+            if total_tc == -Inf32
+                total_tc = Float32(cc_val)
+            else
+                total_tc = log2(2^total_tc + 2^cc_val)
+            end
         end
-        println("Total tc: ", total_tc)
-        println("slice num: ", length(finished_slices))
+        println("  Total tc (branching): ", total_tc)
+        println("  Slice num (branching): ", length(finished_slices))
         
-        # Save results to CSV file
-        results_dir = "./results/spin_glass_ground_counting"
-        mkpath(results_dir)  # Create directory if it doesn't exist
-        
-        results_file = joinpath(results_dir, filename)
-        
-        # Prepare data row with OrderedDict to preserve column order
-        row_data = OrderedDict(
-            "sc_target" => sc_target,
-            "total_tc_slicing" => total_tc_slicing,
-            "slice_num_slicing" => 2.0^slice_num_slicing,
-            "total_tc" => total_tc,
-            "slice_num" => length(finished_slices)
+        # Create a row of data
+        row = DataFrame(
+            model_name = [model_name],
+            vertices = [nv(graph)],
+            edges = [ne(graph)],
+            sc_target = [sc_target],
+            total_tc = [total_tc],
+            slice_num = [length(finished_slices)],
+            total_tc_slicing = [Float32(total_tc_slicing)],
+            sc_slicing = [Float32(sc_slicing)],
+            slice_num_slicing = [slice_num_slicing]
         )
         
-        # Check if file exists to determine if we need to write header
-        file_exists = isfile(results_file)
-        
-        # Create DataFrame from the row (OrderedDict preserves order)
-        df = DataFrame([row_data])
-        
-        # Append to CSV file
-        CSV.write(results_file, df, append=file_exists, writeheader=!file_exists)
-        
-        println("\nResults saved to: ", results_file)
+        # Immediately append to CSV file
+        CSV.write(results_file, row, append=true)
+        println("  Results saved to CSV for model: $model_name")
     end
-
 end
 
+println("\nAll results saved to: $results_file")

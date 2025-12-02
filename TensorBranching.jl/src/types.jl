@@ -109,7 +109,14 @@ struct SlicedBranch{INT, VT, RT, PT}
 end
 function Base.show(io::IO, branch::SlicedBranch{INT, VT, RT, PT}) where {INT, VT, RT, PT}
     print(io, "SlicedBranch{$INT, $VT, $RT, $PT}: ")
-    gtype = VT isa UnitWeight ? "simple graph" : "weighted graph"
+    if VT == Nothing
+        gtype = "Max SAT graph"
+    else
+        # For MISProblem and SpinGlassProblem, check if VT is UnitWeight type
+        # UnitWeight is from GenericTensorNetworks, so we check by comparing with an instance
+        test_weight = UnitWeight(1)
+        gtype = (VT == typeof(test_weight)) ? "simple graph" : "weighted graph"
+    end
     print(io, "graph: {$(nv(branch.p.g)), $(ne(branch.p.g))} $gtype; ")
     cc = complexity(branch)
     print(io, "code complexity: sc: $(cc.sc), tc: $(cc.tc)")

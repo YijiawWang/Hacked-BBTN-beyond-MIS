@@ -7,8 +7,8 @@ using OMEinsum: DynamicNestedEinsum
 using OMEinsumContractionOrders: uniformsize
 using TensorBranching: optimal_branches_ground_induced_sparsity
 using TensorBranching: show_status, spinglass_linear_LP_bound, solve_slice, QP_bound
-using CUDA, CuTropicalGEMM, BenchmarkTools
-CUDA.device!(1)
+using CUDA, CuTropicalGEMM, BenchmarkTools, Primes
+CUDA.device!(4)
 
 
 function slice_dfs(p::SpinGlassProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, verbose::Int) where {INT, VT, RT}
@@ -55,18 +55,21 @@ function slice_dfs_lp(p::SpinGlassProblem{INT, VT}, slicer::ContractionTreeSlice
     unfinished_slices = SlicedBranch[initial_branch]
     finished_slices = SlicedBranch[]
     scs = [complexity(initial_branch).sc]
+    unfinished_lp_scores = Float32[]
     size_dict = uniformsize(uncompress(initial_branch.code), 2)
 
     # lp_bound = spinglass_linear_LP_bound(initial_branch.p.g, initial_branch.p.J, initial_branch.p.h)
     lp_bound = min(spinglass_linear_LP_bound(initial_branch.p.g, initial_branch.p.J, initial_branch.p.h), QP_bound(initial_branch.p.g, initial_branch.p.J, initial_branch.p.h, time_limit=20.0))
+    push!(unfinished_lp_scores, lp_bound)
     primal_bound = 0.0
     finished_count = 0
 
     verbose ≥ 1 && @info "initial lp_bound: $lp_bound"
-
+   
     while !isempty(unfinished_slices)
         branch_to_slice = popfirst!(unfinished_slices)
         sc_to_slice = popfirst!(scs)
+        lp_to_slice = popfirst!(unfinished_lp_scores)
 
         verbose ≥ 1 && @info "slicing branch with sc: $sc_to_slice"
 
@@ -81,6 +84,7 @@ function slice_dfs_lp(p::SpinGlassProblem{INT, VT}, slicer::ContractionTreeSlice
                 for i in length(new_slices):-1:1
                     pushfirst!(unfinished_slices, new_slices[i])
                     pushfirst!(scs, new_scs[i])
+                    pushfirst!(unfinished_lp_scores, lp_scores[i])
                 end
             end
             if !isempty(lp_scores) && new_scs[1] <= slicer.sc_target
@@ -92,9 +96,10 @@ function slice_dfs_lp(p::SpinGlassProblem{INT, VT}, slicer::ContractionTreeSlice
                 primal_bound = max(primal_bound, feasible_solution)
                 verbose ≥ 1 && @info "feasible solution: $feasible_solution, primal bound: $primal_bound"
             end
-
-            if !isempty(lp_scores) && (maximum(lp_scores) - primal_bound) ≤ 1e-8
+             
+            if !isempty(unfinished_lp_scores) && abs(maximum(unfinished_lp_scores) - primal_bound) ≤ 1e-4
                 verbose ≥ 1 && @info "converged"
+                pushfirst!(finished_slices, new_slices[1])
                 return finished_slices
             end
         end
@@ -130,7 +135,7 @@ function _slice_single_lp(slice::ST, primal_bound::Float64, slicer::ContractionT
     
     new_slices = SlicedBranch[]
     new_scs = Int[]
-    lp_scores = Float64[]
+    lp_scores = Float32[]
     for (i, slice) in enumerate(temp_slices)
         # lp_score = spinglass_linear_LP_bound(slice.p.g, slice.p.J, slice.p.h) + slice.r
         lp_score = min(spinglass_linear_LP_bound(slice.p.g, slice.p.J, slice.p.h), QP_bound(slice.p.g, slice.p.J, slice.p.h, time_limit=20.0)) + slice.r
