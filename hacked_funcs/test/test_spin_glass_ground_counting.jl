@@ -89,9 +89,9 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     seed = 123456
     Random.seed!(seed)
-    g = Graphs.grid([15, 15])
+    g = Graphs.grid([20, 20])
     J = Float32.(2.0 * rand(Bool, ne(g)) .- 1.0)  # Random ±1
     h = Float32.(ones(Float32, nv(g)) * 0.5)
-    test_slice_dfs(g, J, h, 5)
+    test_slice_dfs(g, J, h, 10)
 end
 

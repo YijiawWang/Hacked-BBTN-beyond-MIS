@@ -66,9 +66,7 @@ function test_slice_dfs(g, clauses, sc_target)
     result = solve(g_problem, SizeMax())[]
     maximum_satisfied_clauses = result.n
     println("Maximum satisfied clauses: ", maximum_satisfied_clauses)
-    t1 = time()
-    println("Time taken to solve the problem: ", t1 - t0)
-    exit()
+   
     println("\nProblem info:")
     println("  Variables: ", n_vars)
     println("  Clauses: ", length(clauses))
@@ -147,10 +145,10 @@ end
 
 # Run the test
 if abspath(PROGRAM_FILE) == @__FILE__
-    for seed in 1:10
+    for seed in 1:1
         Random.seed!(seed)
         g, clauses = generate_simple_sat(30, 800, seed=seed+1)
-        test_slice_dfs(g, clauses, 8)
+        test_slice_dfs(g, clauses, 22)
     end
 end
 
