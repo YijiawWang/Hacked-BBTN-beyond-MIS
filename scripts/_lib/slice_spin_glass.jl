@@ -18,7 +18,9 @@ the benchmark script:
 
   * `spin_glass_J±1_grid_n=<n>_seed=<seed>.model`
         -> graph_type = `grid_Jpm1`,            default h = 0.5
-  * `spin_glass_J1J2_grid_L=<L>_J1pm1_J2pm1_seed=<seed>.model`
+  * `spin_glass_J1J2_grid_L=<L>_J1=<J1>_g=<g>_seed=<seed>.model`
+        -> graph_type = `j1j2_grid_open`,       default h = 0.5
+  * `spin_glass_J1J2_grid_L=<L>_J1pm1_J2pm1_seed=<seed>.model`  (legacy)
         -> graph_type = `j1j2_grid_open`,       default h = 0.5
   * `spin_glass_J1J2_pbc_afm_grid_L=<L>_g=<gf>.model`
         -> graph_type = `j1j2_grid_pbc_afm`,    default h = 0.0
@@ -193,7 +195,32 @@ function _classify_model(path::AbstractString, header_meta::AbstractDict)
         )
     end
 
-    # Family 2: spin_glass_J1J2_grid_L=<L>_J1pm1_J2pm1_seed=<seed>
+    # Family 2 (current): spin_glass_J1J2_grid_L=<L>_J1=<J1>_g=<g>_seed=<seed>
+    m = match(r"^spin_glass_J1J2_grid_L=(\d+)_J1=([\-0-9eE\.]+)_g=([\-0-9eE\.]+)_seed=(\d+)$",
+              basename_str)
+    if m !== nothing
+        L    = parse(Int, m.captures[1])
+        J1   = parse(Float64, m.captures[2])
+        gf   = parse(Float64, m.captures[3])
+        seed = parse(Int, m.captures[4])
+        return (
+            family     = "j1j2",
+            graph_type = "j1j2_grid_open",
+            h_default  = 0.5,
+            subdir     = "j1j2_grid_L=$(L)_J1=$(J1)_g=$(gf)_seed=$(seed)_cheating",
+            model_name = "$(basename_str)_cheating",
+            meta       = Dict{String,Any}(
+                "L"    => L,
+                "g"    => gf,
+                "J1"   => J1,
+                "J2"   => J1 * gf,
+                "seed" => seed,
+            ),
+        )
+    end
+
+    # Family 2 (legacy): spin_glass_J1J2_grid_L=<L>_J1pm1_J2pm1_seed=<seed>
+    # (NN ±1, NNN ±0.5 → effective |J1|=1, g=0.5)
     m = match(r"^spin_glass_J1J2_grid_L=(\d+)_J1pm1_J2pm1_seed=(\d+)$",
               basename_str)
     if m !== nothing
@@ -205,7 +232,13 @@ function _classify_model(path::AbstractString, header_meta::AbstractDict)
             h_default  = 0.5,
             subdir     = "j1j2_grid_J1pm1_J2pm1_L=$(L)_seed=$(seed)_cheating",
             model_name = "$(basename_str)_cheating",
-            meta       = Dict{String,Any}("L" => L, "g" => 1.0, "seed" => seed),
+            meta       = Dict{String,Any}(
+                "L"    => L,
+                "g"    => 0.5,
+                "J1"   => 1.0,
+                "J2"   => 0.5,
+                "seed" => seed,
+            ),
         )
     end
 

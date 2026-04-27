@@ -20,8 +20,14 @@ Usage:
         [--ns=lo[:step]:hi]        # j1pm1 only        (default 75:5:80)
         [--seeds=lo:hi]            # j1pm1 / j1j2      (default 1:10 / 1:1)
         [--Ls=lo[:step]:hi]        # j1j2 / j1j2_pbc   (default 50:1:50 / 19:1:19)
-        [--gs=g1,g2,...]           # j1j2_pbc only     (default 1//2,1//10)
-        [--J1=<float>]             # j1j2_pbc only     (default -1.0)
+        [--gs=g1,g2,...]           # j1j2 / j1j2_pbc   (default 0.5    / 1//2,1//10)
+        [--J1=<float>]             # j1j2 / j1j2_pbc   (default 1.0    / -1.0)
+
+For the open-boundary `j1j2` family, NN bonds are i.i.d. ±|J1| and NNN
+bonds are i.i.d. ±|g·J1| (independent random signs per bond), so only
+the magnitude of `J1` matters; the sign is irrelevant. For `j1j2_pbc`,
+`J1` is used as-is (default `-1.0` for AFM) and `J2 = g·J1`, no
+randomness.
 
 `--gs` accepts either rationals (`1//2`) or decimals (`0.5`).
 `--family=all` runs all three families; overrides apply to whichever
@@ -179,13 +185,15 @@ end
 # ---------------------------------------------------------------------------
 
 """
-    build_j1j2_square(L; rng) -> (graph, edge_weights)
+    build_j1j2_square(L; rng, J1mag, J2mag) -> (graph, edge_weights)
 
-`L x L` open-boundary square lattice. NN bonds i.i.d. ∈ {±1}, NNN
-diagonal bonds i.i.d. ∈ {±0.5}. `edge_weights` is keyed by
-`(min(u,v), max(u,v))`.
+`L x L` open-boundary square lattice. NN bonds i.i.d. ∈ {+J1mag, -J1mag},
+NNN diagonal bonds i.i.d. ∈ {+J2mag, -J2mag}. `edge_weights` is keyed
+by `(min(u,v), max(u,v))`.
 """
-function build_j1j2_square(L::Int; rng::AbstractRNG)
+function build_j1j2_square(L::Int; rng::AbstractRNG,
+                           J1mag::Float64 = 1.0,
+                           J2mag::Float64 = 0.5)
     graph = SimpleGraph(L * L)
     idx(i, j) = (i - 1) * L + j
     bond_is_nn = Dict{Tuple{Int,Int}, Bool}()
@@ -209,29 +217,37 @@ function build_j1j2_square(L::Int; rng::AbstractRNG)
     edge_weights = Dict{Tuple{Int,Int}, Float64}()
     for e in edges(graph)
         key = minmax(src(e), dst(e))
-        if bond_is_nn[key]
-            edge_weights[key] = rand(rng, Bool) ? 1.0 : -1.0
-        else
-            edge_weights[key] = rand(rng, Bool) ? 0.5 : -0.5
-        end
+        mag = bond_is_nn[key] ? J1mag : J2mag
+        edge_weights[key] = rand(rng, Bool) ? mag : -mag
     end
     return graph, edge_weights
 end
 
-function generate_j1j2_open(; Ls = 50:1:50, seeds = 1:1)
-    println("\n[generate j1j2 open] Ls=$(collect(Ls))  seeds=$(collect(seeds))")
-    for L in Ls, seed in seeds
-        rng = MersenneTwister(seed)
-        graph, edge_weights = build_j1j2_square(L; rng = rng)
+function generate_j1j2_open(; Ls = 50:1:50, seeds = 1:1,
+                              gs = (0.5,), J1::Float64 = 1.0)
+    # Signs are randomized per bond, so only |J1| matters here.
+    J1mag = abs(J1)
+    println("\n[generate j1j2 open] Ls=$(collect(Ls))  " *
+            "gs=$(collect(gs))  seeds=$(collect(seeds))  |J1|=$J1mag")
+    for L in Ls, g in gs, seed in seeds
+        gf    = Float64(g)
+        J2mag = J1mag * gf
 
-        filename = "spin_glass_J1J2_grid_L=$(L)_J1pm1_J2pm1_seed=$(seed).model"
+        rng = MersenneTwister(seed)
+        graph, edge_weights = build_j1j2_square(L; rng = rng,
+                                                J1mag = J1mag,
+                                                J2mag = J2mag)
+
+        filename = "spin_glass_J1J2_grid_L=$(L)_J1=$(J1mag)" *
+                   "_g=$(gf)_seed=$(seed).model"
         filepath = joinpath(OUTPUT_DIR, filename)
         write_spin_glass_model(filepath,
-            ["# J1-J2 spin glass, open boundary square lattice",
+            ["# J1-J2 spin glass, open boundary square lattice, random ± signs",
              "L = $L",
              "seed = $seed",
-             "J1_type = ±1   (NN,  i.i.d.)",
-             "J2_type = ±0.5 (NNN, i.i.d.)"],
+             "J1 = $J1mag   # NN  bond magnitude (signs are random ±)",
+             "g = $gf     # |J2 / J1|",
+             "J2 = $J2mag   # NNN bond magnitude (signs are random ±)"],
             graph, edge_weights)
     end
 end
@@ -324,6 +340,8 @@ function main(args)
         kw = Dict{Symbol,Any}()
         cfg.Ls    !== nothing && (kw[:Ls]    = cfg.Ls)
         cfg.seeds !== nothing && (kw[:seeds] = cfg.seeds)
+        cfg.gs    !== nothing && (kw[:gs]    = cfg.gs)
+        cfg.J1_set            && (kw[:J1]    = cfg.J1)
         generate_j1j2_open(; kw...)
     end
 

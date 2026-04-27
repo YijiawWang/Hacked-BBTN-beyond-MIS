@@ -19,7 +19,9 @@ include(joinpath(@__DIR__, "..", "..", "contractors", "spin_glass_slice_contract
 #
 #   * Family 1 (`j1pm1`)   : J = ±1 NN-only grid (open boundary)
 #   * Family 2 (`j1j2`)    : J1-J2 square lattice, open boundary,
-#                            NN i.i.d. ±1, NNN i.i.d. ±0.5
+#                            NN i.i.d. ±|J1|, NNN i.i.d. ±|g·J1|
+#                            (defaults |J1|=1, g=0.5 reproduce the old
+#                             ±1 / ±0.5 behaviour)
 #   * Family 3 (`j1j2_pbc`): J1-J2 AFM square lattice with PBC (torus),
 #                            J2 = g · J1
 #
@@ -44,14 +46,19 @@ Usage:
         [--ns=lo:hi]               # j1pm1 only        (default 70:1:70)
         [--seeds=lo:hi]            # j1pm1 / j1j2      (default 2:2 / 1:1)
         [--Ls=lo:hi]               # j1j2 / j1j2_pbc   (default 50:1:50 / 19:1:19)
-        [--gs=g1,g2,...]           # j1j2_pbc only     (default 1//2,1//10)
-        [--J1=<float>]             # j1j2_pbc only     (default -1.0)
+        [--gs=g1,g2,...]           # j1j2 / j1j2_pbc   (default 0.5    / 1//2,1//10)
+        [--J1=<float>]             # j1j2 / j1j2_pbc   (default 1.0    / -1.0)
         [--h=<float>]              # uniform field     (default 0.5/0.5/0.0)
-        [--J2-scale=<float>]       # j1j2 only         (default 1.0; CSV g column)
+        [--J2-scale=<float>]       # j1j2 legacy alias for --gs=<g>
+        [--ntrials=<int>]          # TreeSA ntrials    (default 50)
+        [--niters=<int>]           # TreeSA niters     (default 100)
+        [--code-seeds=<lo:hi>]     # TreeSA RNG seeds  (default 1:2)
 
 `--gs` accepts either rationals (`1//2`) or decimals (`0.5`).
 `--family=all` runs all three families; overrides apply to whichever
-family takes that parameter.
+family takes that parameter. Lower `--ntrials --niters --code-seeds`
+for quick sanity checks on small instances; benchmark defaults are
+sized for L≈50.
 """
 
 
@@ -103,6 +110,9 @@ function _parse_args(args)
     h        = nothing                  # `nothing` → use family default
     J2_scale = 1.0
     J2_scale_set = false
+    ntrials    = 50
+    niters     = 100
+    code_seeds = 1:2
 
     for a in args
         if startswith(a, "--family=")
@@ -125,6 +135,12 @@ function _parse_args(args)
         elseif startswith(a, "--J2-scale=")
             J2_scale = parse(Float64, split(a, "="; limit = 2)[2])
             J2_scale_set = true
+        elseif startswith(a, "--ntrials=")
+            ntrials = parse(Int, split(a, "="; limit = 2)[2])
+        elseif startswith(a, "--niters=")
+            niters = parse(Int, split(a, "="; limit = 2)[2])
+        elseif startswith(a, "--code-seeds=")
+            code_seeds = _parse_int_range(split(a, "="; limit = 2)[2])
         elseif a in ("-h", "--help")
             println(_USAGE)
             exit(0)
@@ -139,7 +155,8 @@ function _parse_args(args)
         error("unknown family: $family\n$_USAGE")
 
     return (; family, sc_target, ns, seeds, Ls, gs,
-              J1, J1_set, h, J2_scale, J2_scale_set)
+              J1, J1_set, h, J2_scale, J2_scale_set,
+              ntrials, niters, code_seeds)
 end
 
 
@@ -219,9 +236,9 @@ end
               graph_type, meta_extra, sc_target) -> Union{NamedTuple, Nothing}
 
 Shared per-instance pipeline: best-of-K TreeSA code search → standalone
-slicing pass → `slice_dfs_lp` branching → stream finished slices to disk
-→ accumulate total `tc`. Returns a `NamedTuple` of metrics, or `nothing`
-when no slice was produced.
+slicing pass → `slice_dfs_lp` branching → batch-persist finished slices
+to disk via `save_spin_glass_slices` → accumulate total `tc`. Returns a
+`NamedTuple` of metrics, or `nothing` when no slice was produced.
 """
 function run_case!(; graph::SimpleGraph,
                     edge_weights_vec::AbstractVector,
@@ -230,7 +247,10 @@ function run_case!(; graph::SimpleGraph,
                     slice_subdir::AbstractString,
                     graph_type::AbstractString,
                     meta_extra::AbstractDict,
-                    sc_target::Int)
+                    sc_target::Int,
+                    ntrials::Int = 50,
+                    niters::Int  = 100,
+                    code_seeds::AbstractRange = 1:2)
     t_total_start = time()
     p = SpinGlassProblem(graph, edge_weights_vec, h)
 
@@ -241,11 +261,10 @@ function run_case!(; graph::SimpleGraph,
     # Best-of-K TreeSA code search: spend more time looking for a good
     # contraction path; keep the candidate with the lowest tc.
     bbtn_optimizer = TreeSA(
-        ntrials = 50,    # default 10
-        niters  = 100,   # default 50
+        ntrials = ntrials,    # default 10 in OMEinsumContractionOrders
+        niters  = niters,     # default 50
         βs      = 0.01:0.02:20.0,
     )
-    code_seeds = 1:2
     code = nothing
     cc   = nothing
     best_tc = Inf
@@ -291,39 +310,40 @@ function run_case!(; graph::SimpleGraph,
     println("    Number of slices (slicing):   ", slice_num_slicing)
     println("    Slicing wall time (s):        ", slicing_time)
 
-    # Stream-persist every produced slice (graph + J + h + r + saved
-    # code) under `beyond_mis/branch_results/<subdir>` so partial
-    # progress survives interruption. Re-contraction is later done by
-    # `beyond_mis/contractors/spin_glass_slice_contract.jl`.
+    # Persist every produced slice (graph + J + h + r + saved code)
+    # under `beyond_mis/branch_results/<subdir>`. Re-contraction is
+    # later done by `beyond_mis/contractors/spin_glass_slice_contract.jl`.
+    # NB: the contractor's on-disk API is the batch-style
+    # `save_spin_glass_slices(subdir, slices; ...)`. We collect the
+    # slices in memory first via `slice_dfs_lp` and dump them in one
+    # shot. The `on_finished_slice` callback is still used for live
+    # progress logging but no longer touches the filesystem.
     full_meta = merge(Dict{String,Any}(
         "sc_target" => sc_target,
         "vertices"  => nv(graph),
         "edges"     => ne(graph),
     ), Dict{String,Any}(string(k) => v for (k, v) in pairs(meta_extra)))
 
-    slice_writer = init_spin_glass_slice_writer(slice_subdir;
-        original   = (graph, edge_weights_vec, h),
-        model_name = model_name,
-        graph_type = graph_type,
-        overwrite  = true,
-        meta       = full_meta,
-    )
-    println("  Streaming slices to $(slice_writer.dirname)")
-
     t_branching_start = time()
     finished_slices = slice_dfs_lp(p, slicer, code, true, 1;
         on_finished_slice = slice -> begin
-            sid = append_spin_glass_slice!(slice_writer, slice;
-                                           flush_summary = true)
             cc_s = complexity(slice)
-            println("  [slice $sid saved] sc=$(cc_s.sc) tc=$(cc_s.tc) " *
-                    "nv=$(nv(slice.p.g)) ne=$(ne(slice.p.g)) r=$(slice.r) " *
-                    "(total saved: $(length(slice_writer.ids)))")
+            println("  [slice produced] sc=$(cc_s.sc) tc=$(cc_s.tc) " *
+                    "nv=$(nv(slice.p.g)) ne=$(ne(slice.p.g)) r=$(slice.r)")
             flush(stdout)
         end)
     branching_time = time() - t_branching_start
 
-    slice_dir = finalize_spin_glass_slice_writer!(slice_writer)
+    println("  finished $(length(finished_slices)) slice(s) in " *
+            "$(round(branching_time, digits = 3))s; persisting ...")
+    slice_dir = save_spin_glass_slices(slice_subdir, finished_slices;
+        original       = (graph, edge_weights_vec, h),
+        model_name     = model_name,
+        graph_type     = graph_type,
+        overwrite      = true,
+        meta           = full_meta,
+        update_summary = true,
+    )
     println("  Saved $(length(finished_slices)) slice(s) to $slice_dir")
     println("  Branching (slice_dfs_lp) wall time (s): ", branching_time)
 
@@ -366,7 +386,10 @@ end
 function run_family_j1pm1(; n_values    = 70:1:70,
                             seed_values = 2:2,
                             h_default   = 0.5f0,
-                            sc_target::Int)
+                            sc_target::Int,
+                            ntrials::Int = 50,
+                            niters::Int  = 100,
+                            code_seeds::AbstractRange = 1:2)
     output_dir = "results/spin_glass_ground_counting"
     mkpath(output_dir)
     results_file = joinpath(output_dir, "spin_glass_ground_counting_results.csv")
@@ -412,6 +435,9 @@ function run_family_j1pm1(; n_values    = 70:1:70,
             graph_type       = "grid_Jpm1",
             meta_extra       = Dict("n" => n, "seed" => seed),
             sc_target        = sc_target,
+            ntrials          = ntrials,
+            niters           = niters,
+            code_seeds       = code_seeds,
         )
         r === nothing && continue
 
@@ -440,11 +466,39 @@ end
 # Family 2: J1-J2 spin glass on open square lattice (NN ±1, NNN ±0.5)
 # ---------------------------------------------------------------------------
 
+"""
+    _j1j2_open_model_paths(L, g, J1mag, seed) -> Vector{String}
+
+Return candidate `.model` paths for the j1j2 open-boundary family in the
+order they should be tried. The first entry is the new filename emitted
+by the current generator
+(`spin_glass_J1J2_grid_L=<L>_J1=<|J1|>_g=<g>_seed=<seed>.model`); the
+second is the legacy `J1pm1_J2pm1` name, kept so existing dumps still
+get picked up when `(|J1|, g) == (1.0, 0.5)`.
+"""
+function _j1j2_open_model_paths(L::Int, g::Float64, J1mag::Float64, seed::Int)
+    paths = String[]
+    push!(paths, joinpath(INPUT_DIR,
+        "spin_glass_J1J2_grid_L=$(L)_J1=$(J1mag)_g=$(g)_seed=$(seed).model"))
+    if J1mag == 1.0 && g == 0.5
+        push!(paths, joinpath(INPUT_DIR,
+            "spin_glass_J1J2_grid_L=$(L)_J1pm1_J2pm1_seed=$(seed).model"))
+    end
+    return paths
+end
+
 function run_family_j1j2_open(; L_values    = 50:1:50,
                                 seed_values = 1:1,
+                                gs          = (0.5,),
+                                J1          = 1.0,
                                 h_default   = 0.5f0,
-                                J2_scale    = 1.0,
-                                sc_target::Int)
+                                sc_target::Int,
+                                ntrials::Int = 50,
+                                niters::Int  = 100,
+                                code_seeds::AbstractRange = 1:2)
+    J1mag = abs(Float64(J1))
+    g_values = Tuple(Float64.(gs))
+
     output_dir = "results/spin_glass_j1j2_ground_counting"
     mkpath(output_dir)
     results_file = joinpath(output_dir,
@@ -453,6 +507,7 @@ function run_family_j1j2_open(; L_values    = 50:1:50,
         model_name        = String[],
         L                 = Int[],
         g                 = Float64[],
+        J1                = Float64[],
         seed              = Int[],
         vertices          = Int[],
         edges             = Int[],
@@ -469,39 +524,59 @@ function run_family_j1j2_open(; L_values    = 50:1:50,
     ensure_results_csv!(results_file, schema)
 
     println("\n" * "="^60)
-    println("[family] J1-J2 spin glass (open boundary, NN ±1, NNN ±0.5)")
+    println("[family] J1-J2 spin glass (open boundary, random ± signs, " *
+            "NN magnitude |J1|, NNN magnitude |g·J1|)")
     println("  L values:    $(collect(L_values))")
+    println("  g values:    $(collect(g_values))")
+    println("  |J1|:        $J1mag")
     println("  seed values: $(collect(seed_values))")
-    println("  J2_scale:    $J2_scale   (CSV g column)")
     println("  sc_target:   $sc_target")
 
-    for seed in seed_values, L in L_values
-        model_file = joinpath(INPUT_DIR,
-            "spin_glass_J1J2_grid_L=$(L)_J1pm1_J2pm1_seed=$(seed).model")
-        if !isfile(model_file)
-            println("  Warning: File not found: $(basename(model_file))")
+    for seed in seed_values, L in L_values, g in g_values
+        gf  = Float64(g)
+        candidates = _j1j2_open_model_paths(L, gf, J1mag, seed)
+        model_file = ""
+        for p in candidates
+            if isfile(p)
+                model_file = p
+                break
+            end
+        end
+        if isempty(model_file)
+            println("  Warning: model file not found for " *
+                    "L=$L g=$gf |J1|=$J1mag seed=$seed " *
+                    "(tried: $(join(map(basename, candidates), ", ")))")
             continue
         end
 
         graph, edge_weights_vec = read_spin_glass_model(model_file)
         h = fill(Float32(h_default), nv(graph))
 
+        tag = "L=$(L)_J1=$(J1mag)_g=$(gf)_seed=$(seed)"
         r = run_case!(
             graph            = graph,
             edge_weights_vec = edge_weights_vec,
             h                = h,
-            model_name       = "spin_glass_J1J2_grid_L=$(L)_J1pm1_J2pm1_seed=$(seed)_cheating",
-            slice_subdir     = "j1j2_grid_J1pm1_J2pm1_L=$(L)_seed=$(seed)_cheating",
+            model_name       = "spin_glass_J1J2_grid_$(tag)_cheating",
+            slice_subdir     = "j1j2_grid_$(tag)_cheating",
             graph_type       = "j1j2_grid_open",
-            meta_extra       = Dict("L" => L, "g" => J2_scale, "seed" => seed),
+            meta_extra       = Dict("L"  => L,
+                                    "g"  => gf,
+                                    "J1" => J1mag,
+                                    "J2" => J1mag * gf,
+                                    "seed" => seed),
             sc_target        = sc_target,
+            ntrials          = ntrials,
+            niters           = niters,
+            code_seeds       = code_seeds,
         )
         r === nothing && continue
 
         row = DataFrame(
             model_name        = [r.model_name],
             L                 = [L],
-            g                 = [J2_scale],
+            g                 = [gf],
+            J1                = [J1mag],
             seed              = [seed],
             vertices          = [r.vertices],
             edges             = [r.edges],
@@ -530,7 +605,10 @@ function run_family_j1j2_pbc(; L_values  = 19:1:19,
                                g_values  = (1/2, 1/10),
                                J1::Float64 = -1.0,
                                h_default = 0.0f0,
-                               sc_target::Int)
+                               sc_target::Int,
+                               ntrials::Int = 50,
+                               niters::Int  = 100,
+                               code_seeds::AbstractRange = 1:2)
     output_dir = "results/spin_glass_j1j2_pbc_ground_counting"
     mkpath(output_dir)
     results_file = joinpath(output_dir,
@@ -584,6 +662,9 @@ function run_family_j1j2_pbc(; L_values  = 19:1:19,
             meta_extra       = Dict("L" => L, "g" => gf,
                                     "J1" => J1, "J2" => J2),
             sc_target        = sc_target,
+            ntrials          = ntrials,
+            niters           = niters,
+            code_seeds       = code_seeds,
         )
         r === nothing && continue
 
@@ -624,7 +705,12 @@ function main(args)
     println("="^60)
 
     if cfg.family == "j1pm1" || cfg.family == "all"
-        kw = Dict{Symbol,Any}(:sc_target => cfg.sc_target)
+        kw = Dict{Symbol,Any}(
+            :sc_target  => cfg.sc_target,
+            :ntrials    => cfg.ntrials,
+            :niters     => cfg.niters,
+            :code_seeds => cfg.code_seeds,
+        )
         cfg.ns    !== nothing && (kw[:n_values]    = cfg.ns)
         cfg.seeds !== nothing && (kw[:seed_values] = cfg.seeds)
         cfg.h     !== nothing && (kw[:h_default]   = Float32(cfg.h))
@@ -632,16 +718,32 @@ function main(args)
     end
 
     if cfg.family == "j1j2" || cfg.family == "all"
-        kw = Dict{Symbol,Any}(:sc_target => cfg.sc_target)
+        kw = Dict{Symbol,Any}(
+            :sc_target  => cfg.sc_target,
+            :ntrials    => cfg.ntrials,
+            :niters     => cfg.niters,
+            :code_seeds => cfg.code_seeds,
+        )
         cfg.Ls           !== nothing && (kw[:L_values]    = cfg.Ls)
         cfg.seeds        !== nothing && (kw[:seed_values] = cfg.seeds)
         cfg.h            !== nothing && (kw[:h_default]   = Float32(cfg.h))
-        cfg.J2_scale_set              && (kw[:J2_scale]   = cfg.J2_scale)
+        if cfg.gs !== nothing
+            kw[:gs] = cfg.gs
+        elseif cfg.J2_scale_set
+            # legacy alias: --J2-scale=<g> ≡ --gs=<g>
+            kw[:gs] = (cfg.J2_scale,)
+        end
+        cfg.J1_set                     && (kw[:J1] = cfg.J1)
         run_family_j1j2_open(; kw...)
     end
 
     if cfg.family == "j1j2_pbc" || cfg.family == "all"
-        kw = Dict{Symbol,Any}(:sc_target => cfg.sc_target)
+        kw = Dict{Symbol,Any}(
+            :sc_target  => cfg.sc_target,
+            :ntrials    => cfg.ntrials,
+            :niters     => cfg.niters,
+            :code_seeds => cfg.code_seeds,
+        )
         cfg.Ls !== nothing && (kw[:L_values] = cfg.Ls)
         cfg.gs !== nothing && (kw[:g_values] = cfg.gs)
         cfg.J1_set        && (kw[:J1]        = cfg.J1)
