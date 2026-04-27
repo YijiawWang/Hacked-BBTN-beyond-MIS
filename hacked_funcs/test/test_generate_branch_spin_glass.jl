@@ -16,115 +16,110 @@ const generate_branch_no_reduction_spin_glass = getfield(TensorBranching, :gener
 function test_fix_vertex_branching(g, J, h, fixed_vertex::Int)
     """
     Test that fixing a vertex and creating two branches (s=-1 and s=+1)
-    results in branch counts that sum to the total count.
+    correctly recovers the global ground state.
+
+    Each branch's CountingMax gives the degeneracy at *that branch's own*
+    maximum energy. Only branches whose (subgraph_max + r) reaches the
+    global ground-state energy contribute to the global ground-state
+    count. So we sum counts only over those max-energy branches, mirroring
+    the logic of test_fix_three_adjacent_vertices.
     """
     println("=" ^ 60)
     println("Testing fix vertex branching")
     println("=" ^ 60)
     println("Graph: $(nv(g)) vertices, $(ne(g)) edges")
     println("Fixed vertex: $fixed_vertex")
-    
-    # Create original problem
+
     p = SpinGlassProblem(g, J, h)
-    
-    # Calculate total ground state count
+
     g_problem = GenericTensorNetwork(SpinGlass(g, J, h); optimizer=TreeSA())
     count_maximum_spin_glass = solve(g_problem, CountingMax())[]
     total_size = count_maximum_spin_glass.n[1]
     total_count = count_maximum_spin_glass.c[1]
-    
+
     println("\nOriginal problem:")
     println("  Ground state size: $total_size")
     println("  Ground state count: $total_count")
-    
-    # Create code and size_dict
+
     code = initialize_code(g, TreeSA())
     size_dict = uniformsize(code, 2)
-    
-    # Create slicer (minimal, just for the function call)
+
     slicer = ContractionTreeSlicer(
-        sc_target = 100,  # Large enough to not refine
+        sc_target = 100,
         table_solver = TensorNetworkSolver(),
         region_selector = ScoreRS(n_max=10),
         brancher = GreedyBrancher()
     )
-    
-    # Region is just the fixed vertex
+
     region = [fixed_vertex]
-    
-    # Determine INT type
     INT = BitBasis.longinttype(length(region), 2)
-    
-    # Create two branches: s=-1 (bit=1) and s=+1 (bit=0)
     removed_vertices_list = [fixed_vertex]
-    
-    # Branch 1: s = -1 (bit = 1)
-    val1 = INT(1)  # First bit is 1, meaning s = -1
-    branch1 = generate_branch_no_reduction_spin_glass(p, code, removed_vertices_list, val1, slicer, size_dict, region)
-    
-    # Branch 2: s = +1 (bit = 0)
-    val2 = INT(0)  # First bit is 0, meaning s = +1
-    branch2 = generate_branch_no_reduction_spin_glass(p, code, removed_vertices_list, val2, slicer, size_dict, region)
-    
-    println("\nBranch 1 (s=$fixed_vertex = -1):")
-    println("  Subgraph: $(nv(branch1.p.g)) vertices, $(ne(branch1.p.g)) edges")
-    println("  Fixed energy contribution r: $(branch1.r)")
-    
-    println("\nBranch 2 (s=$fixed_vertex = +1):")
-    println("  Subgraph: $(nv(branch2.p.g)) vertices, $(ne(branch2.p.g)) edges")
-    println("  Fixed energy contribution r: $(branch2.r)")
-    
-    # Calculate ground state counts for each branch
-    branch1_count = 0.0
-    branch2_count = 0.0
-    
-    if nv(branch1.p.g) > 0
-        branch1_problem = GenericTensorNetwork(SpinGlass(branch1.p.g, branch1.p.J, branch1.p.h); optimizer=TreeSA())
-        branch1_result = solve(branch1_problem, CountingMax())[]
-        branch1_size = branch1_result.n[1] + branch1.r
-        branch1_count = branch1_result.c[1]
-        println("\nBranch 1 results:")
-        println("  Ground state size: $branch1_size (subgraph: $(branch1_result.n[1]), fixed: $(branch1.r))")
-        println("  Ground state count: $branch1_count")
-    else
-        # Empty subgraph, check if r matches total_size
-        println("\nBranch 1: Empty subgraph, fixed energy: $(branch1.r)")
-        if abs(branch1.r - total_size) < 1e-12
-            branch1_count = 1.0  # Only one configuration (the fixed one)
+
+    # Build both branches: bit=1 -> s=-1, bit=0 -> s=+1
+    branch_sizes = Float64[]
+    branch_counts = Float64[]
+    branch_labels = String[]
+
+    for (config, label) in [(INT(1), "s=$fixed_vertex = -1"), (INT(0), "s=$fixed_vertex = +1")]
+        branch = generate_branch_no_reduction_spin_glass(
+            p, code, removed_vertices_list, config, slicer, size_dict, region
+        )
+        println("\nBranch ($label):")
+        println("  Subgraph: $(nv(branch.p.g)) vertices, $(ne(branch.p.g)) edges")
+        println("  Fixed energy contribution r: $(branch.r)")
+
+        if nv(branch.p.g) > 0
+            sub_problem = GenericTensorNetwork(
+                SpinGlass(branch.p.g, branch.p.J, branch.p.h); optimizer=TreeSA()
+            )
+            sub_result = solve(sub_problem, CountingMax())[]
+            bsize = sub_result.n[1] + branch.r
+            bcount = sub_result.c[1]
+            println("  Ground state size: $bsize (subgraph: $(sub_result.n[1]), fixed: $(branch.r))")
+            println("  Ground state count (this branch): $bcount")
+            push!(branch_sizes, bsize)
+            push!(branch_counts, bcount)
+        else
+            println("  Empty subgraph, total energy: $(branch.r)")
+            push!(branch_sizes, branch.r)
+            push!(branch_counts, 1.0)  # single fixed configuration
         end
+        push!(branch_labels, label)
     end
-    
-    if nv(branch2.p.g) > 0
-        branch2_problem = GenericTensorNetwork(SpinGlass(branch2.p.g, branch2.p.J, branch2.p.h); optimizer=TreeSA())
-        branch2_result = solve(branch2_problem, CountingMax())[]
-        branch2_size = branch2_result.n[1] + branch2.r
-        branch2_count = branch2_result.c[1]
-        println("\nBranch 2 results:")
-        println("  Ground state size: $branch2_size (subgraph: $(branch2_result.n[1]), fixed: $(branch2.r))")
-        println("  Ground state count: $branch2_count")
-    else
-        # Empty subgraph, check if r matches total_size
-        println("\nBranch 2: Empty subgraph, fixed energy: $(branch2.r)")
-        if abs(branch2.r - total_size) < 1e-12
-            branch2_count = 1.0  # Only one configuration (the fixed one)
-        end
-    end
-    
-    # Verify counts sum to total
-    sum_count = branch1_count + branch2_count
+
+    # Only branches reaching the global maximum contribute
+    max_branch_size = maximum(branch_sizes)
+    valid_branches = [i for i in 1:length(branch_sizes)
+                      if abs(branch_sizes[i] - max_branch_size) < 1e-9]
+    sum_count_max_size = sum(branch_counts[i] for i in valid_branches)
+
     println("\n" * "=" ^ 60)
     println("Verification:")
     println("  Total count: $total_count")
-    println("  Branch 1 count: $branch1_count")
-    println("  Branch 2 count: $branch2_count")
-    println("  Sum: $sum_count")
-    
-    if abs(sum_count - total_count) < 1e-6
-        println("  ✓ PASS: Sum equals total count!")
+    println("  Total size: $total_size")
+    println("  Max branch size: $max_branch_size")
+    println("  Branch sizes: $branch_sizes")
+    println("  Branch counts: $branch_counts")
+    println("  Sum of all branch counts: $(sum(branch_counts))")
+    println("  Sum of max-size branch counts: $sum_count_max_size")
+    valid_labels_str = join(branch_labels[valid_branches], " | ")
+    println("  Valid branches (max size): $valid_branches  ($valid_labels_str)")
+
+    size_match = abs(total_size - max_branch_size) < 1e-9
+    count_match = abs(sum_count_max_size - total_count) < 1e-6
+
+    if size_match && count_match
+        println("  ✓ PASS: Sum of max-size branch counts equals total count!")
         return true
     else
-        println("  ✗ FAIL: Sum does not equal total count!")
-        println("  Difference: $(abs(sum_count - total_count))")
+        println("  ✗ FAIL:")
+        if !size_match
+            println("    Size mismatch: total_size=$total_size, max_branch_size=$max_branch_size")
+        end
+        if !count_match
+            println("    Count mismatch: expected $total_count, got $sum_count_max_size")
+            println("    Difference: $(abs(sum_count_max_size - total_count))")
+        end
         return false
     end
 end
