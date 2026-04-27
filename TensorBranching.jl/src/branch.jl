@@ -190,7 +190,7 @@ function optimal_branches_ground_counting_induced_sparsity(p::MISProblem{INT, VT
             # Compute LP bound with removed vertices
             g_i, vmap_i = induced_subgraph(p.g, setdiff(1:nv(p.g), rv))
             r_i = clause_size(p.weights, bs & all_mask, region)
-            LP_bound = LP_MWIS(g_i, p.weights[vmap_i]) + r + r_i
+            LP_bound = LP_MWIS_with_reduction(g_i, p.weights[vmap_i]) + r + r_i
             if LP_bound > primal_bound - 0.0001
                 push!(filtered_table, tbl0.table[i])
             end

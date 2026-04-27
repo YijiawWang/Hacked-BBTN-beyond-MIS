@@ -115,15 +115,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
     J = target.J
     h = target.h
     test_slice_dfs(g, J, h, 10)
-    
-
-
-    # #g = random_regular_graph(200, 3)
-    # g = Graphs.grid([15, 15])
-    # # J = randn(Float64, ne(g))
-    # J = 2.0 * rand(Bool, ne(g)) .- 1.0  # Random ±1
-    # h = ones(Float64, nv(g))
-    # test_slice_dfs(g, J, h, 8)
    
 end
 

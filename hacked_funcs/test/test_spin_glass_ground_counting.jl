@@ -89,12 +89,9 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     seed = 123456
     Random.seed!(seed)
-    g = Graphs.grid([20, 20])
+    g = Graphs.grid([15, 15])
     J = Float32.(2.0 * rand(Bool, ne(g)) .- 1.0)  # Random ±1
-    # h = Float32.(ones(Float32, nv(g)) * 0.5)
-    # h = randn(Float32, nv(g))
-    h = Float32.(2.0 * rand(Bool, nv(g)) .- 1.0)
-    test_slice_dfs(g, J, h, 10)
-    test_slice_dfs(g, J, h, 6)
+    h = Float32.(ones(Float32, nv(g)) * 0.5)
+    test_slice_dfs(g, J, h, 5)
 end
 

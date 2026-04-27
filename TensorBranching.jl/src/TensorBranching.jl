@@ -5,7 +5,7 @@ using OptimalBranching.OptimalBranchingCore, OptimalBranching.OptimalBranchingMI
 
 using GenericTensorNetworks, ProblemReductions
 using Graphs, TropicalNumbers, OMEinsum, AbstractTrees, TreeWidthSolver, OMEinsumContractionOrders
-using JuMP, SCIP
+using JuMP, SCIP, Gurobi
 using JLD2, Random, UnicodePlots, CSV, DataFrames
 using Base.Threads
 

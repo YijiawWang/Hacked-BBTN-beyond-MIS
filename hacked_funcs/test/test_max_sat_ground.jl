@@ -149,9 +149,6 @@ end
 if abspath(PROGRAM_FILE) == @__FILE__
     for seed in 1:10
         Random.seed!(seed)
-        
-        
-        # Test 1: Medium problem
         g, clauses = generate_simple_sat(30, 800, seed=seed+1)
         test_slice_dfs(g, clauses, 8)
     end

@@ -205,11 +205,6 @@ if abspath(PROGRAM_FILE) == @__FILE__
         for seed in 1:5
             Random.seed!(seed)
         
-            # Test with different problem sizes
-            # - g::SimpleGraph: A bipartite graph with n_vars variable vertices and n_clauses clause vertices.
-            #   Edges connect variable vertices to clause vertices only (no edges between variables or between clauses).
-            # - clauses::Vector{Vector{Int}}: A list of clauses, where each clause is a vector of integers.
-            #   Positive integers represent positive literals (unnegated variables), negative integers represent negated literals.
             g, clauses = generate_simple_sat(15, 15*m, seed=seed)
             test_slice_dfs(g, clauses, 3)
         end

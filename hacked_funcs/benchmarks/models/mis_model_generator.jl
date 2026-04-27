@@ -1,17 +1,17 @@
 using Graphs, GenericTensorNetworks, Random
 
 # Create output directory
-output_dir = "mis_graphs"
+output_dir = "mis_models"
 !isdir(output_dir) && mkdir(output_dir)
 
 # Set random seed
 Random.seed!(1)
 
 # Graph sizes to generate
-ns = 64:10:64
+ns = 20:10:20
 
 for n in ns
-    for seed in 1:10
+    for seed in 1:1
         Random.seed!(seed)
         # Generate random KSG graph
         graph = GenericTensorNetworks.random_diagonal_coupled_graph(n, n, 0.8)

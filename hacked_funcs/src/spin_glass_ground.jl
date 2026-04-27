@@ -8,7 +8,9 @@ using OMEinsumContractionOrders: uniformsize
 using TensorBranching: optimal_branches_ground_induced_sparsity
 using TensorBranching: show_status, spinglass_linear_LP_bound, solve_slice, QP_bound
 using CUDA, CuTropicalGEMM, BenchmarkTools, Primes
-CUDA.device!(4)
+# NOTE: top-level GPU initialisation is intentionally not performed here.
+# Callers that want GPU acceleration should call `CUDA.device!(...)` themselves
+# *before* invoking `slice_dfs_lp(..., usecuda=true, ...)`.
 
 
 function slice_dfs(p::SpinGlassProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, verbose::Int) where {INT, VT, RT}

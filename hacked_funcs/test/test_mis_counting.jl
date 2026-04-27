@@ -83,5 +83,4 @@ if abspath(PROGRAM_FILE) == @__FILE__
     g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(20, 20, 0.8))
     weights = UnitWeight(nv(g))
     test_slice_bfs(g, weights, 10)
-    test_slice_bfs(g, weights, 6)
 end

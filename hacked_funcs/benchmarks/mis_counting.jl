@@ -12,14 +12,22 @@ using OMEinsumContractionOrders: uniformsize
 using CSV, DataFrames
 using OrderedCollections
 include("../src/mis_counting.jl")
+include(joinpath(@__DIR__, "..", "..", "contractors", "mis_slice_contract.jl"))
 
+# Wrapped in `main()` so that this file can be `include`d by other
+# drivers (e.g. `beyond_mis/scripts/_lib/slice_mis_counting.jl`)
+# without triggering the benchmark loop. The guard below preserves
+# the `julia mis_counting.jl` CLI behaviour.
+function main()
 # Set random seed
 Random.seed!(12345)
 
 # Input and output directories
-input_dir = "models/mis_graphs"
+input_dir = "models/mis_graphs/60ksg"
 output_dir = "results/mis_counting"
 mkpath(output_dir)  # Create output directory
+mkpath(SLICE_RESULTS_ROOT)   # central slice dump (beyond_mis/branch_results)
+mis_counting_graph_type = basename(rstrip(input_dir, '/'))
 
 # Get all graph files
 graph_files = filter(x -> endswith(x, ".graph"), readdir(input_dir, join=true))
@@ -123,9 +131,38 @@ for graph_file in graph_files
     println("    Space complexity (slicing): ", sc_slicing)
     println("    Number of slices (slicing): ", slice_num_slicing)
     
+    # Stream-persist every finished slice (graph + weights + r + saved
+    # contraction code) into its own directory under
+    # `beyond_mis/branch_results/` as soon as it is produced, so a
+    # crashed / interrupted run still leaves usable on-disk slices.
+    slice_subdir = "mis_counting_$(replace(graph_name, ".graph" => ""))_seed=$(seed)"
+    slice_writer = init_mis_slice_writer(slice_subdir;
+        original   = (graph, weights),
+        graph_name = graph_name,
+        graph_type = mis_counting_graph_type,
+        overwrite  = true,
+        meta = Dict(
+            "graph"      => graph_name,
+            "seed"       => seed,
+            "sc_target"  => sc_target,
+            "vertices"   => nv(graph),
+            "edges"      => ne(graph),
+        ))
+    println("  Streaming slices to $(slice_writer.dirname)")
+
     # Run counting
-    finished_slices = slice_bfs(p, slicer, code, 1)
-    
+    finished_slices = slice_bfs(p, slicer, code, 1;
+        on_finished_slice = slice -> begin
+            sid = append_mis_slice!(slice_writer, slice; flush_summary = true)
+            cc_s = complexity(slice)
+            println("  [slice $sid saved] sc=$(cc_s.sc) tc=$(cc_s.tc) " *
+                    "nv=$(nv(slice.p.g)) ne=$(ne(slice.p.g)) r=$(slice.r) " *
+                    "(total saved: $(length(slice_writer.ids)))")
+            flush(stdout)
+        end)
+    slice_dir = finalize_mis_slice_writer!(slice_writer)
+    println("  Saved $(length(finished_slices)) slice(s) to $slice_dir")
+
     # Calculate total time complexity (using Float32)
     total_tc = -Inf32  # Initialize to negative infinity (Float32)
     if !isempty(finished_slices)
@@ -160,3 +197,8 @@ for graph_file in graph_files
 end
 
 println("\nAll results saved to: $results_file")
+end  # function main
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    main()
+end

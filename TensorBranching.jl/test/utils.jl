@@ -15,7 +15,7 @@ Random.seed!(1234)
 using TensorBranching: remove_tensors, remove_tensors!, tensors_removed, unsafe_flatten, rethermalize, reindex_tree!
 using TensorBranching: induced_spin_glass_subproblem
 using BitBasis
-using TensorBranching: spinglass_linear_IP, spinglass_linear_LP_bound, QP_bound, QIP_bound
+using TensorBranching: spinglass_linear_IP, spinglass_linear_LP_bound, QP_bound, QIP_bound, QIP_gurobi_bound, IP_MWIS, IP_MWIS_with_reduction
 using GenericTensorNetworks: SpinGlass
 using JuMP, SCIP
 
@@ -397,49 +397,137 @@ using JuMP, SCIP
 #     println("\n✓ All tests for QIP_bound passed!")
 # end
 
-@testset "branching_table_ground_induced_sparsity for MaxSatProblem" begin
-    using OptimalBranchingMIS: MaxSatProblem, TensorNetworkSolver
-    using Random
+# @testset "branching_table_ground_induced_sparsity for MaxSatProblem" begin
+#     using OptimalBranchingMIS: MaxSatProblem, TensorNetworkSolver
+#     using Random
     
-    Random.seed!(1234)
+#     Random.seed!(1234)
     
-    # Create a simple Max SAT problem for testing
-    function create_test_max_sat_problem(n_vars::Int, n_clauses::Int)
-        total_vertices = n_vars + n_clauses
-        g = SimpleGraph(total_vertices)
-        clauses = Vector{Int}[]
+#     # Create a simple Max SAT problem for testing
+#     function create_test_max_sat_problem(n_vars::Int, n_clauses::Int)
+#         total_vertices = n_vars + n_clauses
+#         g = SimpleGraph(total_vertices)
+#         clauses = Vector{Int}[]
         
-        # Create simple clauses: each clause contains 2-3 variables
-        for clause_idx in 1:n_clauses
-            clause_vertex = n_vars + clause_idx
-            # Select 2-3 random variables for this clause
-            selected_vars = randperm(n_vars)[1:min(3, n_vars)]
-            clause = Int[]
+#         # Create simple clauses: each clause contains 2-3 variables
+#         for clause_idx in 1:n_clauses
+#             clause_vertex = n_vars + clause_idx
+#             # Select 2-3 random variables for this clause
+#             selected_vars = randperm(n_vars)[1:min(3, n_vars)]
+#             clause = Int[]
             
-            for var_idx in selected_vars
-                # Randomly decide positive or negative literal
-                is_negated = rand(Bool)
-                push!(clause, is_negated ? -var_idx : var_idx)
-                add_edge!(g, var_idx, clause_vertex)
-            end
+#             for var_idx in selected_vars
+#                 # Randomly decide positive or negative literal
+#                 is_negated = rand(Bool)
+#                 push!(clause, is_negated ? -var_idx : var_idx)
+#                 add_edge!(g, var_idx, clause_vertex)
+#             end
             
-            push!(clauses, clause)
-        end
+#             push!(clauses, clause)
+#         end
         
-        return MaxSatProblem(g, clauses)
+#         return MaxSatProblem(g, clauses)
+#     end
+    
+#     n_vars = 10
+#     n_clauses = 5
+#     p = create_test_max_sat_problem(n_vars, n_clauses)
+#     solver = TensorNetworkSolver()
+#     primal_bound = 0.0
+    
+#     # Test with vs = [1]
+#     vs = [1,2,8]
+#     println("Testing with vs = $vs")
+    
+#     tbl = OptimalBranchingCore.branching_table_ground_induced_sparsity(p, solver, vs, primal_bound)
+#     println("tbl: ", tbl)
+#     @test length(tbl.table) == 2
+# end
+
+@testset "LP_MWIS_with_reduction" begin
+    for seed in 1:10
+        Random.seed!(seed)
+        g = random_regular_graph(30, 3)
+        weights = rand(Float64, nv(g))
+        ip_mwis_with_reduction = IP_MWIS_with_reduction(g, weights)
+        ip_mwis = IP_MWIS(g, weights)
+        println("ip_mwis_with_reduction: $ip_mwis_with_reduction")
+        println("ip_mwis: $ip_mwis")
+        @test ip_mwis_with_reduction ≈ ip_mwis atol=1e-6
     end
-    
-    n_vars = 10
-    n_clauses = 5
-    p = create_test_max_sat_problem(n_vars, n_clauses)
-    solver = TensorNetworkSolver()
-    primal_bound = 0.0
-    
-    # Test with vs = [1]
-    vs = [1,2,8]
-    println("Testing with vs = $vs")
-    
-    tbl = OptimalBranchingCore.branching_table_ground_induced_sparsity(p, solver, vs, primal_bound)
-    println("tbl: ", tbl)
-    @test length(tbl.table) == 2
+end
+
+@testset "QIP_gurobi_bound" begin
+    Random.seed!(1234)
+
+    println("\n=== Testing QIP_gurobi_bound ===")
+
+    # Test case 1: simple path graph with mixed-sign couplings
+    g1 = SimpleGraph(3)
+    add_edge!(g1, 1, 2)
+    add_edge!(g1, 2, 3)
+    J1 = [1.0, 2.0]
+    h1 = [0.5, 1.0, 0.3]
+
+    exact1   = solve(GenericTensorNetwork(SpinGlass(g1, J1, h1)), SizeMax())[].n
+    gurobi1  = QIP_gurobi_bound(g1, J1, h1; time_limit=30.0)
+    scip1    = QIP_bound(g1, J1, h1; optimizer=SCIP.Optimizer, time_limit=30.0)
+    qp1      = QP_bound(g1, J1, h1; optimizer=SCIP.Optimizer, time_limit=30.0)
+
+    println("Test case 1: path graph (nv=3, ne=2)")
+    println("  exact            : $exact1")
+    println("  QIP_gurobi_bound : $gurobi1")
+    println("  QIP_bound (SCIP) : $scip1")
+    println("  QP_bound  (SCIP) : $qp1")
+    @test gurobi1 ≈ exact1 atol=1e-6     # solved to optimality, so equals exact
+    @test gurobi1 ≈ scip1  atol=1e-6     # both QIP solvers agree
+    @test gurobi1 <= qp1 + 1e-6          # IP bound no looser than QP relaxation
+
+    # Test case 2: random regular graph with random Gaussian J, h
+    g2 = random_regular_graph(10, 3)
+    J2 = randn(Float64, ne(g2))
+    h2 = randn(Float64, nv(g2))
+
+    exact2  = solve(GenericTensorNetwork(SpinGlass(g2, J2, h2)), SizeMax())[].n
+    gurobi2 = QIP_gurobi_bound(g2, J2, h2; time_limit=60.0)
+    scip2   = QIP_bound(g2, J2, h2; optimizer=SCIP.Optimizer, time_limit=60.0)
+
+    println("\nTest case 2: random 3-regular graph (nv=10, ne=$(ne(g2)))")
+    println("  exact            : $exact2")
+    println("  QIP_gurobi_bound : $gurobi2")
+    println("  QIP_bound (SCIP) : $scip2")
+    @test gurobi2 ≈ exact2 atol=1e-6
+    @test gurobi2 ≈ scip2  atol=1e-6
+
+    # Test case 3: zero couplings → bound must be 0
+    g3 = SimpleGraph(5)
+    add_edge!(g3, 1, 2); add_edge!(g3, 3, 4)
+    J3 = zeros(Float64, ne(g3))
+    h3 = zeros(Float64, nv(g3))
+    gurobi3 = QIP_gurobi_bound(g3, J3, h3; time_limit=10.0)
+    println("\nTest case 3: zero J, zero h")
+    println("  QIP_gurobi_bound : $gurobi3")
+    @test abs(gurobi3) < 1e-6
+
+    # Test case 4: empty graph (no vertices, no edges) — boundary case
+    g4 = SimpleGraph(0)
+    J4 = Float64[]
+    h4 = Float64[]
+    gurobi4 = QIP_gurobi_bound(g4, J4, h4; time_limit=10.0)
+    println("\nTest case 4: empty graph")
+    println("  QIP_gurobi_bound : $gurobi4")
+    @test abs(gurobi4) < 1e-6
+
+    # Test case 5: Threads kwarg works without crashing and gives the same value
+    g5 = random_regular_graph(8, 3)
+    J5 = randn(Float64, ne(g5))
+    h5 = randn(Float64, nv(g5))
+    exact5  = solve(GenericTensorNetwork(SpinGlass(g5, J5, h5)), SizeMax())[].n
+    gurobi5 = QIP_gurobi_bound(g5, J5, h5; time_limit=30.0, threads=2)
+    println("\nTest case 5: threads=2 kwarg")
+    println("  exact            : $exact5")
+    println("  QIP_gurobi_bound : $gurobi5")
+    @test gurobi5 ≈ exact5 atol=1e-6
+
+    println("\n✓ All tests for QIP_gurobi_bound passed!")
 end

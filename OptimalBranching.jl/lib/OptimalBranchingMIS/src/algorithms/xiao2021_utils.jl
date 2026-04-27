@@ -89,10 +89,19 @@ end
 function fast_heavy_vertex_vmap(g::SimpleGraph, weights::Vector{WT}) where WT
     for v in 1:nv(g)
         v_neighbors = collect(neighbors(g, v))
-        mis_vneighbors = sum(weights[v_neighbors])
-        if weights[v] >= mis_vneighbors
-            g_new, vmap = induced_subgraph(g, setdiff(1:nv(g), [v] ∪ v_neighbors))
-            return g_new, weights[vmap], weights[v], vmap
+        # Only apply this rule if neighbors form an independent set
+        # Otherwise, use the more accurate heavy_vertex_vmap
+        if is_independent(g, v_neighbors)
+            # Also check that all neighbors have non-negative weights
+            # If some neighbors have negative weights, we might be able to select
+            # v together with some positive-weight neighbors, which would be better
+            if all(w -> w >= zero(WT), weights[v_neighbors])
+                mis_vneighbors = sum(weights[v_neighbors])
+                if weights[v] >= mis_vneighbors
+                    g_new, vmap = induced_subgraph(g, setdiff(1:nv(g), [v] ∪ v_neighbors))
+                    return g_new, weights[vmap], weights[v], vmap
+                end
+            end
         end
     end
     return g, weights, 0, collect(1:nv(g))

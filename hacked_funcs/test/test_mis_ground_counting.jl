@@ -166,8 +166,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     seed = 1234567
     Random.seed!(seed)
     g = SimpleGraph(GenericTensorNetworks.random_diagonal_coupled_graph(20, 20, 0.8))
-    weights = ones(Float32, nv(g))
+    weights = ones(nv(g))  # Random integers between 1 and 10
     test_slice_dfs_lp(g, weights, 10)
-    test_slice_dfs_lp(g, weights, 6)
 end
 

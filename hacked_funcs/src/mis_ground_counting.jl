@@ -5,11 +5,16 @@ using Base.Threads
 using TensorBranching: ob_region, optimal_branches, optimal_branches_ground_counting_induced_sparsity, ContractionTreeSlicer, uncompress, SlicedBranch, complexity
 using OMEinsum: DynamicNestedEinsum
 using OMEinsumContractionOrders: uniformsize
-using TensorBranching: show_status, LP_MWIS, solve_slice
-using CUDA, CuTropicalGEMM, BenchmarkTools
-CUDA.device!(2)
+using TensorBranching: show_status, LP_MWIS, solve_slice, LP_MWIS_with_reduction
+# using CUDA, CuTropicalGEMM, BenchmarkTools
+# CUDA.device!(3)
+# NOTE: top-level GPU initialisation removed to mirror
+# `spin_glass_ground_counting.jl`. Callers that want GPU acceleration
+# should call `CUDA.device!(...)` themselves *before* invoking
+# `slice_dfs_lp(..., usecuda=true, ...)`.
 
-function slice_bfs(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, verbose::Int = 0) where {INT, VT}
+function slice_bfs(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, verbose::Int = 0;
+                    on_finished_slice = nothing) where {INT, VT}
     # Initialize with the first branch
     initial_branch = SlicedBranch(p, code, zero(eltype(p.weights)))
     # Use Vector{SlicedBranch} to allow different INT types from branching
@@ -24,6 +29,13 @@ function slice_bfs(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::
         for (slice, sc) in zip(new_slices, new_scs)
             if sc ≤ slicer.sc_target
                 push!(finished_slices, slice)
+                if on_finished_slice !== nothing
+                    try
+                        on_finished_slice(slice)
+                    catch err
+                        @warn "on_finished_slice callback failed" exception=(err, catch_backtrace())
+                    end
+                end
             else
                 push!(unfinished_slices, slice)
             end
@@ -43,10 +55,21 @@ function _slice_bfs(unfinished_slices::Vector{SlicedBranch}, slicer::Contraction
     Threads.@threads for chunk in chunks
         for i in chunk
             branch = unfinished_slices[i]
-            uncompressed_code = uncompress(branch.code)
-            region, loss = ob_region(branch.p.g, uncompressed_code, slicer, slicer.region_selector, size_dict, verbose)
-            branches = optimal_branches_ground_counting(branch.p, uncompressed_code, branch.r, slicer, region, size_dict, verbose)
-            temp_slices[i] = branches
+            cc = complexity(branch)
+            if cc.sc ≤ slicer.sc_target
+                # Mirror the early-out already present in `slice_dfs_lp`
+                # (this file) and `_slice_bfs` in `mis_counting.jl`: if
+                # the code already fits the sc budget, do NOT call
+                # `ob_region` (which `minimum`s an empty region selector
+                # output on a trivial code and crashes). Just keep the
+                # branch as a finished slice.
+                temp_slices[i] = [branch]
+            else
+                uncompressed_code = uncompress(branch.code)
+                region, loss = ob_region(branch.p.g, uncompressed_code, slicer, slicer.region_selector, size_dict, verbose)
+                branches = optimal_branches_ground_counting(branch.p, uncompressed_code, branch.r, slicer, region, size_dict, verbose)
+                temp_slices[i] = branches
+            end
         end
     end
     
@@ -56,14 +79,15 @@ function _slice_bfs(unfinished_slices::Vector{SlicedBranch}, slicer::Contraction
     return new_slices, new_scs
 end
 
-function slice_dfs_lp(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, usecuda::Bool, verbose::Int) where {INT, VT, RT}
+function slice_dfs_lp(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, usecuda::Bool, verbose::Int;
+                       on_finished_slice = nothing) where {INT, VT, RT}
     initial_branch = SlicedBranch(p, code, zero(eltype(p.weights)))
     unfinished_slices = SlicedBranch[initial_branch]
     finished_slices = SlicedBranch[]
     scs = [complexity(initial_branch).sc]
     size_dict = uniformsize(uncompress(initial_branch.code), 2)
 
-    lp_bound = LP_MWIS(initial_branch.p.g, initial_branch.p.weights)
+    lp_bound = LP_MWIS_with_reduction(initial_branch.p.g, initial_branch.p.weights)
     primal_bound = 0.0
     finished_count = 0
 
@@ -77,19 +101,25 @@ function slice_dfs_lp(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, cod
 
         cc = complexity(branch_to_slice)
         if cc.sc ≤ slicer.sc_target 
-            if primal_bound <= 0.01
-                if iszero(cc.sc)
-                    feasible_solution = branch_to_slice.r
-                else
-                    feasible_solution = solve_slice(branch_to_slice,Float32, usecuda) + branch_to_slice.r
-                end
-                primal_bound = max(primal_bound, feasible_solution)
-                verbose ≥ 1 && @info "feasible solution: $feasible_solution, primal bound: $primal_bound"
+            
+            if iszero(cc.sc)
+                feasible_solution = branch_to_slice.r
+            else
+                feasible_solution = solve_slice(branch_to_slice,Float32, usecuda) + branch_to_slice.r
             end
+            primal_bound = max(primal_bound, feasible_solution)
+            verbose ≥ 1 && @info "feasible solution: $feasible_solution, primal bound: $primal_bound"
             
 
             push!(finished_slices, branch_to_slice)
             finished_count += 1
+            if on_finished_slice !== nothing
+                try
+                    on_finished_slice(branch_to_slice)
+                catch err
+                    @warn "on_finished_slice callback failed" exception=(err, catch_backtrace())
+                end
+            end
             
             
         else
@@ -122,7 +152,7 @@ function _slice_single(slice::ST, primal_bound::Float64, slicer::ContractionTree
     new_scs = Int[]
     lp_scores = Float64[]
     for (i, slice) in enumerate(temp_slices)
-        lp_score = LP_MWIS(slice.p.g, slice.p.weights) + slice.r
+        lp_score = LP_MWIS_with_reduction(slice.p.g, slice.p.weights) + slice.r
         verbose ≥ 1 && @info "slice $i, lp_score: $lp_score, primal_bound: $primal_bound"
         if lp_score > primal_bound - 0.0001
             push!(lp_scores, lp_score)

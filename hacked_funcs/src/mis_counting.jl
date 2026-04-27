@@ -7,7 +7,8 @@ using OMEinsum: DynamicNestedEinsum
 using OMEinsumContractionOrders: uniformsize
 using TensorBranching: show_status
 
-function slice_bfs(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, verbose::Int = 0) where {INT, VT}
+function slice_bfs(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::DynamicNestedEinsum{Int}, verbose::Int = 0;
+                    on_finished_slice = nothing) where {INT, VT}
     # Initialize with the first branch
     initial_branch = SlicedBranch(p, code, zero(eltype(p.weights)))
     # Use Vector{SlicedBranch} to allow different INT types from branching
@@ -22,6 +23,13 @@ function slice_bfs(p::MISProblem{INT, VT}, slicer::ContractionTreeSlicer, code::
         for (slice, sc) in zip(new_slices, new_scs)
             if sc ≤ slicer.sc_target
                 push!(finished_slices, slice)
+                if on_finished_slice !== nothing
+                    try
+                        on_finished_slice(slice)
+                    catch err
+                        @warn "on_finished_slice callback failed" exception=(err, catch_backtrace())
+                    end
+                end
             else
                 push!(unfinished_slices, slice)
             end

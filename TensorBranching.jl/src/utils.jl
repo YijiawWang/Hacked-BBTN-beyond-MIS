@@ -1,3 +1,5 @@
+using OptimalBranching.OptimalBranchingMIS: kernelize, XiaoReducer
+
 function _log2_einsize(eincode::ET, size_dict::Dict{LT, Int}) where {ET, LT}
     return foldl((x, y) -> x + log2(size_dict[y]), eincode.iy, init = 0.0)
 end
@@ -410,6 +412,64 @@ function LP_MWIS(graph::SimpleGraph,weights::Vector{T}; optimizer = SCIP.Optimiz
     return objective_bound(model)
 end
 
+function LP_MWIS_with_reduction(graph::SimpleGraph,weights::Vector{T}; optimizer = SCIP.Optimizer) where T
+    reduction_result = reduce_graph(graph, weights, XiaoReducer())
+    reduced_graph = reduction_result.g
+    reduced_weights = reduction_result.weights
+    reduced_r = reduction_result.r
+    
+    if nv(reduced_graph) == 0
+        return reduced_r
+    end
+    model = Model(optimizer)  
+    set_silent(model)  
+    nsc = nv(reduced_graph)
+    @variable(model, 0 <= x[i = 1:nsc] <= 1)
+    @objective(model, Max, sum(reduced_weights[i]*x[i] for i in 1:nsc))
+
+    for e in edges(reduced_graph)
+        i = src(e)
+        j = dst(e)
+        @constraint(model, x[i]+x[j] <= 1)
+    end
+    cliques = find_all_cliques(reduced_graph,3)
+    for clique in cliques
+        @constraint(model, sum(x[i] for i in clique) <= 1)
+    end
+    optimize!(model)
+    
+    return objective_bound(model) + reduced_r
+end
+
+function IP_MWIS_with_reduction(graph::SimpleGraph,weights::Vector{T}; optimizer = SCIP.Optimizer) where T
+    reduction_result = kernelize(graph, weights, XiaoReducer())
+    reduced_graph = reduction_result.g
+    reduced_weights = reduction_result.weights
+    reduced_r = reduction_result.r
+    println(nv(reduced_graph),",", reduced_r)
+    if nv(reduced_graph) == 0
+        return reduced_r
+    end
+    model = Model(optimizer)  
+    set_silent(model)  
+    nsc = nv(reduced_graph)
+    @variable(model, 0 <= x[i = 1:nsc] <= 1, Int)
+    @objective(model, Max, sum(reduced_weights[i]*x[i] for i in 1:nsc))
+
+    for e in edges(reduced_graph)
+        i = src(e)
+        j = dst(e)
+        @constraint(model, x[i]+x[j] <= 1)
+    end
+    cliques = find_all_cliques(reduced_graph,3)
+    for clique in cliques
+        @constraint(model, sum(x[i] for i in clique) <= 1)
+    end
+    optimize!(model)
+    
+    return objective_bound(model) + reduced_r
+end
+
 function IP_MWIS(graph::SimpleGraph,weights::Vector{T}; optimizer = SCIP.Optimizer) where T
     model = Model(optimizer)  
     set_silent(model)
@@ -562,6 +622,139 @@ function QP_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.O
 end 
 
 
+# Lazy Gurobi.Env: created once per Julia session and reused across calls
+# to avoid the overhead/license churn of constructing a new environment for
+# every QIP_gurobi_bound invocation.
+const _GRB_ENV = Ref{Any}()
+function _grb_env()
+    isassigned(_GRB_ENV) || (_GRB_ENV[] = Gurobi.Env())
+    return _GRB_ENV[]
+end
+
+"""
+    QIP_gurobi_bound(g, J, h; time_limit=10.0, threads=0, verbose=false)
+
+Same QIP formulation as [`QIP_bound`](@ref) but solved with Gurobi instead of
+SCIP. Returns the Gurobi objective bound (an upper bound on the true spin-glass
+energy maximum) shifted back by `sum(J) + sum(h)` to match the original
+spin-glass energy convention `E(s) = sum_{(i,j)} J_ij s_i s_j + sum_i h_i s_i`
+with `s_i ∈ {-1, +1}` encoded as `s_i = 1 - 2 x_i`.
+"""
+function QIP_gurobi_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T};
+                          time_limit::Float64 = 10.0,
+                          threads::Int = 0,
+                          verbose::Bool = false) where T
+    n = nv(g)
+    c = [-2*h[i] for i in 1:n]
+    for (idx, e) in enumerate(edges(g))
+        i = src(e)
+        j = dst(e)
+        c[i] += -2*J[idx]
+        c[j] += -2*J[idx]
+    end
+
+    model = Model(() -> Gurobi.Optimizer(_grb_env()))
+    verbose ? set_optimizer_attribute(model, "OutputFlag", 1) : set_silent(model)
+    set_time_limit_sec(model, time_limit)
+    threads > 0 && set_optimizer_attribute(model, "Threads", threads)
+
+    @variable(model, x[1:n], Bin)
+
+    quadratic_terms = [4*J[idx] * x[src(e)] * x[dst(e)] for (idx, e) in enumerate(edges(g))]
+    quadratic_obj = isempty(quadratic_terms) ? 0.0 : sum(quadratic_terms)
+
+    linear_obj = isempty(c) ? 0.0 : sum(c[i] * x[i] for i in 1:n)
+    @objective(model, Max, quadratic_obj + linear_obj)
+
+    t0 = time()
+    optimize!(model)
+    elapsed = time() - t0
+
+    status = termination_status(model)
+    println("QIP_gurobi_bound: solver finished in $(round(elapsed; digits=3)) s (time_limit=$(time_limit) s, status=$status)")
+
+    J_sum = isempty(J) ? zero(T) : sum(J)
+    h_sum = isempty(h) ? zero(T) : sum(h)
+
+    try
+        obj_bound = objective_bound(model)
+        return obj_bound + J_sum + h_sum
+    catch e
+        error("QIP_gurobi_bound: failed to get objective bound from Gurobi (status=$status): $e")
+    end
+end
+
+
+"""
+    QIP_value_gurobi(g, J, h; time_limit=10.0, threads=0, verbose=false)
+
+Same QIP formulation as [`QIP_gurobi_bound`](@ref) but returns the *primal*
+`objective_value` of the best feasible solution found by Gurobi (i.e. an
+achievable lower bound on the maximum, which equals the maximum if the solver
+proved optimality), instead of the dual `objective_bound` (an upper bound on
+the maximum). The returned value is shifted by `sum(J) + sum(h)` so that it
+matches the original spin-glass energy convention `E(s) = sum_{(i,j)} J_ij s_i s_j + sum_i h_i s_i`
+with `s_i ∈ {-1, +1}` encoded as `s_i = 1 - 2 x_i`.
+
+Use this to compute a *feasible value* for a slice; use [`QIP_gurobi_bound`](@ref)
+when you need an upper bound for pruning instead.
+
+If the solver finishes without finding any feasible point, this function
+returns `-Inf` (a safe lower bound under the maximization convention) so that
+callers using `primal_bound = max(primal_bound, QIP_value_gurobi(...))` are not
+affected by the missing solution.
+"""
+function QIP_value_gurobi(g::SimpleGraph, J::Vector{T}, h::Vector{T};
+                          time_limit::Float64 = 10.0,
+                          threads::Int = 0,
+                          verbose::Bool = false) where T
+    n = nv(g)
+    c = [-2*h[i] for i in 1:n]
+    for (idx, e) in enumerate(edges(g))
+        i = src(e)
+        j = dst(e)
+        c[i] += -2*J[idx]
+        c[j] += -2*J[idx]
+    end
+
+    model = Model(() -> Gurobi.Optimizer(_grb_env()))
+    verbose ? set_optimizer_attribute(model, "OutputFlag", 1) : set_silent(model)
+    set_time_limit_sec(model, time_limit)
+    threads > 0 && set_optimizer_attribute(model, "Threads", threads)
+
+    @variable(model, x[1:n], Bin)
+
+    quadratic_terms = [4*J[idx] * x[src(e)] * x[dst(e)] for (idx, e) in enumerate(edges(g))]
+    quadratic_obj = isempty(quadratic_terms) ? 0.0 : sum(quadratic_terms)
+
+    linear_obj = isempty(c) ? 0.0 : sum(c[i] * x[i] for i in 1:n)
+    @objective(model, Max, quadratic_obj + linear_obj)
+
+    t0 = time()
+    optimize!(model)
+    elapsed = time() - t0
+
+    status = termination_status(model)
+    println("QIP_value_gurobi: solver finished in $(round(elapsed; digits=3)) s (time_limit=$(time_limit) s, status=$status)")
+
+    J_sum = isempty(J) ? zero(T) : sum(J)
+    h_sum = isempty(h) ? zero(T) : sum(h)
+
+    # Only trust objective_value if a feasible primal point was actually found.
+    if primal_status(model) != JuMP.MOI.FEASIBLE_POINT
+        @warn "QIP_value_gurobi: no feasible point found (status=$status, primal_status=$(primal_status(model))); returning -Inf"
+        return -Inf
+    end
+
+    try
+        obj_val = objective_value(model)
+        return obj_val + J_sum + h_sum
+    catch e
+        error("QIP_value_gurobi: failed to get objective value from Gurobi (status=$status): $e")
+    end
+end
+
+
 function QIP_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.Optimizer, time_limit::Float64 = 10.0) where T
     n = nv(g)
     # Step 1: Convert J, h to Q matrix and c vector
@@ -605,10 +798,13 @@ function QIP_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.
     linear_obj = sum(c[i] * x[i] for i in 1:n)
     @objective(model, Max, quadratic_obj + linear_obj)
     
+    t0 = time()
     optimize!(model)
+    elapsed = time() - t0
     
     # Check optimization status
     status = termination_status(model)
+    println("QIP_bound: solver finished in $(round(elapsed; digits=3)) s (time_limit=$(time_limit) s, status=$status)")
     
     # Handle empty collections in sum
     J_sum = isempty(J) ? zero(T) : sum(J)
@@ -633,6 +829,73 @@ function QIP_bound(g::SimpleGraph, J::Vector{T}, h::Vector{T}; optimizer = SCIP.
         end
     end
 end 
+
+
+"""
+    QIP_value(g, J, h; optimizer=SCIP.Optimizer, time_limit=10.0)
+
+Same QIP formulation as [`QIP_bound`](@ref) but returns the *primal*
+`objective_value` of the best feasible integer solution found (i.e. an
+achievable lower bound on the maximum, which equals the maximum if the solver
+proved optimality), instead of the dual `objective_bound` (an upper bound on
+the maximum). The returned value is shifted by `sum(J) + sum(h)` so that it
+matches the original spin-glass energy convention `E(s) = sum_{(i,j)} J_ij s_i s_j + sum_i h_i s_i`
+with `s_i ∈ {-1, +1}` encoded as `s_i = 1 - 2 x_i`.
+
+Use this to compute a *feasible value* for a slice; use [`QIP_bound`](@ref)
+when you need an upper bound for pruning instead.
+
+If the solver finishes without finding any feasible point, this function
+returns `-Inf` (a safe lower bound under the maximization convention) so that
+callers using `primal_bound = max(primal_bound, QIP_value(...))` are not
+affected by the missing solution.
+"""
+function QIP_value(g::SimpleGraph, J::Vector{T}, h::Vector{T};
+                   optimizer = SCIP.Optimizer, time_limit::Float64 = 10.0) where T
+    n = nv(g)
+    c = [-2*h[i] for i in 1:n]
+    for (idx, e) in enumerate(edges(g))
+        i = src(e)
+        j = dst(e)
+        c[i] += -2*J[idx]
+        c[j] += -2*J[idx]
+    end
+
+    model = Model(optimizer)
+    set_silent(model)
+    set_time_limit_sec(model, time_limit)
+
+    @variable(model, 0 <= x[i = 1:n] <= 1, Int)
+
+    quadratic_terms = [4*J[idx] * x[src(e)] * x[dst(e)] for (idx, e) in enumerate(edges(g))]
+    quadratic_obj = isempty(quadratic_terms) ? 0.0 : sum(quadratic_terms)
+
+    linear_obj = isempty(c) ? 0.0 : sum(c[i] * x[i] for i in 1:n)
+    @objective(model, Max, quadratic_obj + linear_obj)
+
+    t0 = time()
+    optimize!(model)
+    elapsed = time() - t0
+
+    status = termination_status(model)
+    println("QIP_value: solver finished in $(round(elapsed; digits=3)) s (time_limit=$(time_limit) s, status=$status)")
+
+    J_sum = isempty(J) ? zero(T) : sum(J)
+    h_sum = isempty(h) ? zero(T) : sum(h)
+
+    # Only trust objective_value if a feasible primal point was actually found.
+    if primal_status(model) != JuMP.MOI.FEASIBLE_POINT
+        @warn "QIP_value: no feasible point found (status=$status, primal_status=$(primal_status(model))); returning -Inf"
+        return -Inf
+    end
+
+    try
+        obj_val = objective_value(model)
+        return obj_val + J_sum + h_sum
+    catch e
+        error("QIP_value: failed to get objective value from SCIP (status=$status): $e")
+    end
+end
 
 
 function induced_sat_subproblem(g_old::SimpleGraph, clauses::Vector{Vector{Int}}, val, removed_vertices::Vector{Int}, region::Vector{Int})
@@ -774,7 +1037,7 @@ function induced_sat_subproblem(g_old::SimpleGraph, clauses::Vector{Vector{Int}}
             old_var = abs(literal)
             if haskey(var_remap, old_var)
                 new_var = var_remap[old_var]
-                # 保持正负号
+                # Preserve the sign
                 if literal > 0
                     push!(new_clause, new_var)
                 else
