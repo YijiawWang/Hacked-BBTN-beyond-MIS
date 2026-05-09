@@ -76,7 +76,8 @@ function slice_results_dir(subdir::AbstractString; root::AbstractString = SLICE_
     return joinpath(root, String(subdir))
 end
 
-_summary_path(root::AbstractString = SLICE_RESULTS_ROOT) = joinpath(root, "summary.csv")
+_summary_path(root::AbstractString = SLICE_RESULTS_ROOT;
+              filename::AbstractString = "summary.csv") = joinpath(root, filename)
 
 # ----------------------------------------------------------------------
 # Low-level vector / scalar (de)serialisation
@@ -168,7 +169,8 @@ _orig_h_path(dir)     = joinpath(dir, "original_h.txt")
                             graph_type = "",
                             overwrite = false,
                             meta = Dict(),
-                            update_summary = true) -> String
+                            update_summary = true,
+                            summary_filename = "summary.csv") -> String
 
 Persist a vector of `SlicedBranch` (spin glass) objects produced by
 `slice_dfs_lp` to `joinpath(root, subdir)` so they can later be
@@ -189,8 +191,8 @@ to write somewhere outside `SLICE_RESULTS_ROOT`.
 If `overwrite=true` the directory is cleared first.
 
 If `update_summary=true` (default) one row is appended to / updated in
-`<root>/summary.csv` describing this run (graph_type, vertices, edges,
-sc_target, slice_num, total_tc, ...).
+`<root>/<summary_filename>` describing this run (graph_type, vertices,
+edges, sc_target, slice_num, total_tc, ...).
 
 Returns the absolute path of the per-instance directory.
 """
@@ -201,7 +203,8 @@ function save_spin_glass_slices(subdir::AbstractString, slices;
                                  graph_type::AbstractString = "",
                                  overwrite::Bool = false,
                                  meta::AbstractDict = Dict{String,Any}(),
-                                 update_summary::Bool = true)
+                                 update_summary::Bool = true,
+                                 summary_filename::AbstractString = "summary.csv")
     dirname = slice_results_dir(subdir; root = root)
 
     if overwrite && isdir(dirname)
@@ -263,7 +266,7 @@ function save_spin_glass_slices(subdir::AbstractString, slices;
             sym = Symbol(string(k))
             haskey(info, sym) || (info[sym] = v)
         end
-        update_slice_summary(info; root = root)
+        update_slice_summary(info; root = root, filename = summary_filename)
     end
 
     return dirname
@@ -277,16 +280,18 @@ function _logsumexp_tc(tcs::AbstractVector{<:Real})
 end
 
 """
-    update_slice_summary(info::AbstractDict; root = SLICE_RESULTS_ROOT, key = :subdir)
+    update_slice_summary(info::AbstractDict; root = SLICE_RESULTS_ROOT,
+                         key = :subdir, filename = "summary.csv")
 
 Insert (or replace, when `info[key]` is already present) one row into
-`<root>/summary.csv`. Missing columns are added on the fly so different
+`<root>/<filename>`. Missing columns are added on the fly so different
 benchmark families can share the same summary file.
 """
 function update_slice_summary(info::AbstractDict; root::AbstractString = SLICE_RESULTS_ROOT,
-                               key::Symbol = :subdir)
+                               key::Symbol = :subdir,
+                               filename::AbstractString = "summary.csv")
     mkpath(root)
-    path = _summary_path(root)
+    path = _summary_path(root; filename = filename)
 
     info_sym = Dict{Symbol,Any}(Symbol(string(k)) => v for (k, v) in info)
     haskey(info_sym, key) ||
@@ -297,7 +302,7 @@ function update_slice_summary(info::AbstractDict; root::AbstractString = SLICE_R
         try
             CSV.read(path, DataFrame)
         catch err
-            @warn "summary.csv at $path is unreadable, starting fresh ($(err))"
+            @warn "$filename at $path is unreadable, starting fresh ($(err))"
             DataFrame()
         end
     else

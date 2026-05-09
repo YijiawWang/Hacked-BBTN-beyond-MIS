@@ -1,4 +1,6 @@
 # Ignore folders
+branch_results/
+hacked_funcs/benchmarks/models/spin_glass_models/
 ignore/
 **/logs/
 **/logs/**/*

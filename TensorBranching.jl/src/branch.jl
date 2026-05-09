@@ -191,7 +191,7 @@ function optimal_branches_ground_counting_induced_sparsity(p::MISProblem{INT, VT
             g_i, vmap_i = induced_subgraph(p.g, setdiff(1:nv(p.g), rv))
             r_i = clause_size(p.weights, bs & all_mask, region)
             LP_bound = LP_MWIS_with_reduction(g_i, p.weights[vmap_i]) + r + r_i
-            if LP_bound > primal_bound - 0.0001
+            if LP_bound > primal_bound - 0.01
                 push!(filtered_table, tbl0.table[i])
             end
         end
@@ -261,7 +261,7 @@ function optimal_branches_ground_counting_induced_sparsity(p::SpinGlassProblem{I
             J_i, h_i, r_i = induced_spin_glass_subproblem(p.g, g_i, vmap_i, p.J, p.h, bs & all_mask, rv, region)
             # LP_bound = spinglass_linear_LP_bound(g_i, J_i, h_i) + r + r_i
             LP_bound = spinglass_linear_LP_bound(g_i, J_i, h_i) + r + r_i
-            if LP_bound > primal_bound - 0.0001
+            if LP_bound > primal_bound - 0.01
                 push!(filtered_table, tbl0.table[i])
             end
         end
@@ -331,7 +331,7 @@ function optimal_branches_ground_induced_sparsity(p::SpinGlassProblem{INT, VT}, 
                 J_i, h_i, r_i = induced_spin_glass_subproblem(p.g, g_i, vmap_i, p.J, p.h, bs & all_mask, rv, region)
                 # LP_bound = spinglass_linear_LP_bound(g_i, J_i, h_i) + r + r_i
                 LP_bound = spinglass_linear_LP_bound(g_i, J_i, h_i) + r + r_i
-                if LP_bound > primal_bound - 0.0001
+                if LP_bound > primal_bound - 0.01
                     push!(filtered_row, bs)
                 end
             end

@@ -154,7 +154,7 @@ function _slice_single(slice::ST, primal_bound::Float64, slicer::ContractionTree
     for (i, slice) in enumerate(temp_slices)
         lp_score = LP_MWIS_with_reduction(slice.p.g, slice.p.weights) + slice.r
         verbose ≥ 1 && @info "slice $i, lp_score: $lp_score, primal_bound: $primal_bound"
-        if lp_score > primal_bound - 0.0001
+        if lp_score > primal_bound - 0.01
             push!(lp_scores, lp_score)
             push!(new_scs, complexity(slice).sc)
             push!(new_slices, slice)

@@ -16,6 +16,8 @@
 #              [--code-seeds=<lo:hi>] [--lp-time-limit=<sec>] [--quiet]
 #   ./slice.sh --help
 #
+# TreeSA defaults for ntrials/niters/beta are owned by the Julia driver.
+#
 # Environment overrides:
 #   JULIA_BIN     — julia executable (default: 'julia')
 #   JULIA_PROJECT — Julia project path (default: <repo>/beyond_mis)

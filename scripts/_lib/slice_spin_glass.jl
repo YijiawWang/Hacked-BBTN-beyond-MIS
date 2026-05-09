@@ -24,6 +24,8 @@ the benchmark script:
         -> graph_type = `j1j2_grid_open`,       default h = 0.5
   * `spin_glass_J1J2_pbc_afm_grid_L=<L>_g=<gf>.model`
         -> graph_type = `j1j2_grid_pbc_afm`,    default h = 0.0
+  * `spin_glass_J1J2_obc_afm_grid_L=<L>_g=<gf>.model`
+        -> graph_type = `j1j2_grid_obc_afm`,    default h = 0.5
 
 Files that don't match any of these patterns are sliced with a generic
 graph_type / `h = 0.0` / `subdir = <basename>_cheating`, which is fine
@@ -39,8 +41,10 @@ Usage:
         [--graph-type=<name>]    # override auto-inferred graph_type tag
         [--no-lp]                # use slice_dfs (no Gurobi LP) instead of
                                  # slice_dfs_lp (the benchmarks' default)
-        [--ntrials=<int>]        # TreeSA ntrials for code search (default 50)
-        [--niters=<int>]         # TreeSA niters    for code search (default 100)
+        [--ntrials=<int>]        # TreeSA ntrials for code search
+                                 # (default TreeSA())
+        [--niters=<int>]         # TreeSA niters for code search
+                                 # (default TreeSA())
         [--code-seeds=<lo:hi>]   # range of RNG seeds for the code search
                                  # (default 1:2, lowest-tc kept)
         [--lp-time-limit=<sec>]  # Gurobi initial LP time limit (default 300)
@@ -58,6 +62,8 @@ using OptimalBranchingMIS: TensorNetworkSolver
 using OMEinsumContractionOrders: TreeSA, uniformsize
 using TensorBranching: ContractionTreeSlicer, GreedyBrancher, ScoreRS,
                        SlicedBranch, complexity, initialize_code
+
+const DEFAULT_TREESA = TreeSA()
 
 # Pull in the benchmark layer (which itself includes
 # `hacked_funcs/src/spin_glass_ground_counting.jl` and the
@@ -265,6 +271,31 @@ function _classify_model(path::AbstractString, header_meta::AbstractDict)
         )
     end
 
+    # Family 4: spin_glass_J1J2_obc_afm_grid_L=<L>_g=<gf>
+    # AFM J1-J2 on an OBC square lattice; same |J1|=1, J2 = J1*g convention
+    # as the PBC family. Default h = 0.5 to match the OBC J1J2 family above.
+    m = match(r"^spin_glass_J1J2_obc_afm_grid_L=(\d+)_g=([\-0-9eE\.]+)$",
+              basename_str)
+    if m !== nothing
+        L  = parse(Int, m.captures[1])
+        gf = parse(Float64, m.captures[2])
+        J1 = _infer_value(header_meta, basename_str, "J1", -1.0)
+        J2 = _infer_value(header_meta, basename_str, "J2", J1 * gf)
+        return (
+            family     = "j1j2_obc",
+            graph_type = "j1j2_grid_obc_afm",
+            h_default  = 0.5,
+            subdir     = "j1j2_obc_afm_grid_L=$(L)_g=$(gf)_cheating",
+            model_name = "$(basename_str)_cheating",
+            meta       = Dict{String,Any}(
+                "L"  => L,
+                "g"  => gf,
+                "J1" => J1,
+                "J2" => J2,
+            ),
+        )
+    end
+
     # Generic fallback: just slice it, no family-specific metadata.
     @warn "unrecognised `.model` filename pattern; using generic " *
           "(graph_type=`generic`, h=0). Pass --subdir / --graph-type " *
@@ -318,8 +349,8 @@ function _parse_args(args)
     subdir_override     = ""
     graph_type_override = ""
     use_lp              = true
-    ntrials             = 50
-    niters              = 100
+    ntrials             = DEFAULT_TREESA.ntrials
+    niters              = DEFAULT_TREESA.niters
     code_seeds          = 1:2
     lp_time_limit       = 300.0
     verbose             = 1
@@ -377,14 +408,12 @@ end
     _best_initial_code(graph, ntrials, niters, code_seeds, verbose)
 
 Run `initialize_code(graph, TreeSA(...))` for several RNG seeds and
-return the candidate with the lowest `tc`. Mirrors the “best-of-K
-TreeSA” loop in the benchmarks, so the same seeds (defaults `1:2`)
-will pick the same code as the benchmarks do for the same inputs.
+return the candidate with the lowest `tc`. The annealing schedule uses
+TreeSA's default `βs`.
 """
 function _best_initial_code(graph::SimpleGraph, ntrials::Int, niters::Int,
                             code_seeds::AbstractRange, verbose::Int)
-    optimizer = TreeSA(ntrials = ntrials, niters = niters,
-                       βs = 0.01:0.02:20.0)
+    optimizer = TreeSA(ntrials = ntrials, niters = niters)
     code     = nothing
     cc       = nothing
     best_tc  = Inf

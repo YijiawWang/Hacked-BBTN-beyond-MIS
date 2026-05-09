@@ -16,21 +16,24 @@ const OUTPUT_DIR = "spin_glass_models"
 const _USAGE = """
 Usage:
 
-    julia spin_glass_model_generator.jl --family={j1pm1|j1j2|j1j2_pbc|all}
-        [--ns=lo[:step]:hi]        # j1pm1 only        (default 75:5:80)
-        [--seeds=lo:hi]            # j1pm1 / j1j2      (default 1:10 / 1:1)
-        [--Ls=lo[:step]:hi]        # j1j2 / j1j2_pbc   (default 50:1:50 / 19:1:19)
-        [--gs=g1,g2,...]           # j1j2 / j1j2_pbc   (default 0.5    / 1//2,1//10)
-        [--J1=<float>]             # j1j2 / j1j2_pbc   (default 1.0    / -1.0)
+    julia spin_glass_model_generator.jl --family={j1pm1|j1j2|j1j2_obc|j1j2_pbc|all}
+        [--ns=lo[:step]:hi]        # j1pm1 only                    (default 75:5:80)
+        [--seeds=lo:hi]            # j1pm1 / j1j2                  (default 1:10 / 1:1)
+        [--Ls=lo[:step]:hi]        # j1j2 / j1j2_obc / j1j2_pbc    (default 50:1:50 / 19:1:19 / 19:1:19)
+        [--gs=g1,g2,...]           # j1j2 / j1j2_obc / j1j2_pbc    (default 0.5 / 1//2,1//10 / 1//2,1//10)
+        [--J1=<float>]             # j1j2: |J1| magnitude; j1j2_obc / j1j2_pbc: fixed J1
+                                   # defaults: 1.0 / -1.0 / -1.0
 
-For the open-boundary `j1j2` family, NN bonds are i.i.d. ±|J1| and NNN
-bonds are i.i.d. ±|g·J1| (independent random signs per bond), so only
-the magnitude of `J1` matters; the sign is irrelevant. For `j1j2_pbc`,
-`J1` is used as-is (default `-1.0` for AFM) and `J2 = g·J1`, no
-randomness.
+For the open-boundary `j1j2` family, `--J1` sets only the magnitude:
+NN bonds are i.i.d. ±|J1| and NNN bonds are i.i.d. ±|g·J1|
+(independent random signs per bond), so `--J1=1` means random ±1
+NN couplings, not fixed +1 couplings. The sign of `J1` is ignored.
+For `j1j2_obc` and `j1j2_pbc`, `J1` is used as a fixed coupling as-is
+(default `-1.0` for AFM) and `J2 = g·J1`, no randomness; `j1j2_obc`
+is the open-boundary counterpart of `j1j2_pbc`.
 
 `--gs` accepts either rationals (`1//2`) or decimals (`0.5`).
-`--family=all` runs all three families; overrides apply to whichever
+`--family=all` runs all four families; overrides apply to whichever
 family takes that parameter.
 """
 
@@ -103,8 +106,8 @@ function _parse_args(args)
     end
 
     isempty(family) &&
-        error("--family={j1pm1|j1j2|j1j2_pbc|all} is required\n$_USAGE")
-    family in ("j1pm1", "j1j2", "j1j2_pbc", "all") ||
+        error("--family={j1pm1|j1j2|j1j2_obc|j1j2_pbc|all} is required\n$_USAGE")
+    family in ("j1pm1", "j1j2", "j1j2_obc", "j1j2_pbc", "all") ||
         error("unknown family: $family\n$_USAGE")
 
     return (; family, ns, seeds, Ls, gs, J1, J1_set)
@@ -254,7 +257,79 @@ end
 
 
 # ---------------------------------------------------------------------------
-# Family 3: J1-J2 AFM spin glass on PBC square lattice (torus)
+# Family 3: J1-J2 AFM spin glass on OBC square lattice (open boundary)
+#
+# Open-boundary counterpart of Family 4 (`j1j2_pbc`): no random signs,
+# every NN bond carries the fixed coupling `J1` and every NNN diagonal
+# bond carries `J2 = g · J1`.
+# ---------------------------------------------------------------------------
+
+"""
+    build_j1j2_square_obc(L; J1, J2) -> (graph, edge_weights)
+
+`L x L` open-boundary square lattice with NN coupling `J1` and NNN
+diagonal coupling `J2`. Each pair appears at most once in
+`edge_weights` (keyed by `(min(u,v), max(u,v))`).
+"""
+function build_j1j2_square_obc(L::Int; J1::Float64, J2::Float64)
+    graph = SimpleGraph(L * L)
+    idx(i, j) = (i - 1) * L + j
+
+    edge_weights = Dict{Tuple{Int,Int}, Float64}()
+
+    function add_bond!(u, v, mag)
+        key = minmax(u, v)
+        haskey(edge_weights, key) && return
+        add_edge!(graph, u, v)
+        edge_weights[key] = mag
+    end
+
+    # Fallback: when J2 == 0 (i.e. g == 0) drop all NNN diagonal bonds
+    # entirely instead of recording zero-weight edges.
+    include_nnn = J2 != 0
+
+    for i in 1:L, j in 1:L
+        u = idx(i, j)
+        if i < L
+            add_bond!(u, idx(i + 1, j),     J1)
+        end
+        if j < L
+            add_bond!(u, idx(i,     j + 1), J1)
+        end
+        if include_nnn && i < L && j < L
+            add_bond!(u, idx(i + 1, j + 1), J2)
+        end
+        if include_nnn && i < L && j > 1
+            add_bond!(u, idx(i + 1, j - 1), J2)
+        end
+    end
+    return graph, edge_weights
+end
+
+function generate_j1j2_obc(; Ls = 19:1:19,
+                            gs = (1/2, 1/10),
+                            J1::Float64 = -1.0)
+    println("\n[generate j1j2 obc] Ls=$(collect(Ls))  gs=$(collect(gs))  J1=$J1")
+    for L in Ls, g in gs
+        gf = Float64(g)
+        J2 = J1 * gf
+        graph, edge_weights = build_j1j2_square_obc(L; J1 = J1, J2 = J2)
+
+        filename = "spin_glass_J1J2_obc_afm_grid_L=$(L)_g=$(gf).model"
+        filepath = joinpath(OUTPUT_DIR, filename)
+        write_spin_glass_model(filepath,
+            ["# J1-J2 AFM spin glass, OBC square lattice (open boundary)",
+             "L = $L",
+             "g = $gf   # |J2 / J1|",
+             "J1 = $J1",
+             "J2 = $J2"],
+            graph, edge_weights)
+    end
+end
+
+
+# ---------------------------------------------------------------------------
+# Family 4: J1-J2 AFM spin glass on PBC square lattice (torus)
 #
 # Sign convention in this codebase: the optimizer maximizes
 #     sum_<i,j> J_ij s_i s_j  +  sum_i h_i s_i
@@ -343,6 +418,14 @@ function main(args)
         cfg.gs    !== nothing && (kw[:gs]    = cfg.gs)
         cfg.J1_set            && (kw[:J1]    = cfg.J1)
         generate_j1j2_open(; kw...)
+    end
+
+    if cfg.family == "j1j2_obc" || cfg.family == "all"
+        kw = Dict{Symbol,Any}()
+        cfg.Ls !== nothing && (kw[:Ls] = cfg.Ls)
+        cfg.gs !== nothing && (kw[:gs] = cfg.gs)
+        cfg.J1_set        && (kw[:J1] = cfg.J1)
+        generate_j1j2_obc(; kw...)
     end
 
     if cfg.family == "j1j2_pbc" || cfg.family == "all"

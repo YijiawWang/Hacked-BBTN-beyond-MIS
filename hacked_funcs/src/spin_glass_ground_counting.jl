@@ -59,7 +59,7 @@ function slice_dfs_lp(p::SpinGlassProblem{INT, VT}, slicer::ContractionTreeSlice
     scs = [complexity(initial_branch).sc]
     size_dict = uniformsize(uncompress(initial_branch.code), 2)
 
-    lp_bound = QIP_gurobi_bound(initial_branch.p.g, initial_branch.p.J, initial_branch.p.h, time_limit=300.0)
+    lp_bound = QIP_gurobi_bound(initial_branch.p.g, initial_branch.p.J, initial_branch.p.h, time_limit=600.0)
     primal_bound = 0.0
     finished_count = 0
 
@@ -138,9 +138,9 @@ function _slice_single_lp(slice::ST, primal_bound::Float64, slicer::ContractionT
     new_scs = Int[]
     lp_scores = Float64[]
     for (i, slice) in enumerate(temp_slices)
-        lp_score = QIP_gurobi_bound(slice.p.g, slice.p.J, slice.p.h, time_limit=100.0) + slice.r
+        lp_score = QIP_gurobi_bound(slice.p.g, slice.p.J, slice.p.h, time_limit=600.0) + slice.r
         verbose ≥ 1 && @info "slice $i, lp_score: $lp_score, primal_bound: $primal_bound"
-        if lp_score > primal_bound - 0.0001
+        if lp_score > primal_bound - 0.01
             push!(lp_scores, lp_score)
             push!(new_scs, complexity(slice).sc)
             push!(new_slices, slice)

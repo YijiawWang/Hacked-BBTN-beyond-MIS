@@ -142,7 +142,7 @@ function _slice_single_lp(slice::ST, primal_bound::Float64, slicer::ContractionT
         # lp_score = spinglass_linear_LP_bound(slice.p.g, slice.p.J, slice.p.h) + slice.r
         lp_score = min(spinglass_linear_LP_bound(slice.p.g, slice.p.J, slice.p.h), QP_bound(slice.p.g, slice.p.J, slice.p.h, time_limit=20.0)) + slice.r
         verbose ≥ 1 && @info "slice $i, lp_score: $lp_score, primal_bound: $primal_bound"
-        if lp_score > primal_bound - 0.0001
+        if lp_score > primal_bound - 0.01
             push!(lp_scores, lp_score)
             push!(new_scs, complexity(slice).sc)
             push!(new_slices, slice)
